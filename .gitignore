@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.db
+postgres_data/
+recordings/
+events/
+dataset/
+models/
+snapshots/
+camera_probe/
+node_modules/
+.pytest_cache/

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StreamWatch AI Console</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">StreamWatch AI</p>
+          <h1>Consola de monitoreo</h1>
+        </div>
+        <div id="session" class="session"></div>
+      </section>
+
+      <section id="loginPanel" class="panel auth-panel">
+        <div>
+          <h2>Acceso</h2>
+          <p>Ingresa con tu cuenta para gestionar camaras, eventos y muestras para IA.</p>
+        </div>
+        <form id="loginForm" class="form-row">
+          <input id="email" type="email" value="admin@streamwatch.example.com" aria-label="Email" />
+          <input id="password" type="password" value="admin123" aria-label="Password" />
+          <button type="submit">Entrar</button>
+        </form>
+      </section>
+
+      <section id="appPanel" class="workspace hidden">
+        <nav class="tabs" aria-label="Secciones">
+          <button class="tab active" data-view="overviewView" type="button">Camaras</button>
+          <button class="tab" data-view="editorView" type="button">Editor de video</button>
+          <button class="tab" data-view="eventsView" type="button">Eventos</button>
+          <button class="tab" data-view="adminView" type="button">Sistema</button>
+        </nav>
+
+        <section class="metrics">
+          <article>
+            <span id="cameraCount">0</span>
+            <p>Camaras</p>
+          </article>
+          <article>
+            <span id="eventCount">0</span>
+            <p>Eventos</p>
+          </article>
+          <article>
+            <span id="criticalCount">0</span>
+            <p>Alertas criticas</p>
+          </article>
+        </section>
+
+        <section id="overviewView" class="view">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Mosaico de camaras</h2>
+                <p>Miniaturas recientes de todas las fuentes activas.</p>
+              </div>
+              <button id="refreshButton" type="button">Actualizar</button>
+            </div>
+            <div id="cameraMosaic" class="camera-mosaic"></div>
+          </div>
+        </section>
+
+        <section id="editorView" class="view hidden">
+          <div class="editor-layout">
+            <section class="panel video-editor">
+              <div class="panel-head">
+                <div>
+                  <h2>Editor de video</h2>
+                  <p>Reproduce chunks como historial continuo y marca rangos para entrenamiento.</p>
+                </div>
+                <select id="reviewCamera" aria-label="Camara para revision"></select>
+              </div>
+
+              <video id="reviewVideo" class="review-video" controls muted playsinline></video>
+              <div id="historyTimeline" class="history-timeline"></div>
+
+              <div class="range-tools">
+                <label>
+                  Inicio
+                  <input id="rangeStart" type="range" min="0" max="0" value="0" />
+                </label>
+                <label>
+                  Fin
+                  <input id="rangeEnd" type="range" min="0" max="0" value="0" />
+                </label>
+              </div>
+
+              <p id="selectedRange" class="selected-range">Sin grabaciones disponibles.</p>
+            </section>
+
+            <aside class="panel clip-panel">
+              <h2>Clasificacion</h2>
+              <p>Guarda el rango seleccionado como muestra revisada por usuario.</p>
+              <form id="manualEventForm" class="manual-event-form stacked">
+                <select id="manualEventType" aria-label="Tipo de error">
+                  <option value="freeze">Freeze</option>
+                  <option value="black_screen">Pantalla negra</option>
+                  <option value="buffering">Buffering</option>
+                  <option value="ad">Anuncio</option>
+                  <option value="repeated_ad">Anuncio repetido</option>
+                  <option value="normal">Normal</option>
+                </select>
+                <input id="manualNotes" placeholder="Notas para entrenamiento" aria-label="Notas" />
+                <button type="submit">Guardar rango</button>
+              </form>
+            </aside>
+          </div>
+        </section>
+
+        <section id="eventsView" class="view hidden">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Eventos</h2>
+                <p>Alertas automaticas y correcciones manuales.</p>
+              </div>
+              <select id="eventFilter" aria-label="Filtro de evento">
+                <option value="">Todos</option>
+                <option value="freeze">Freeze</option>
+                <option value="black_screen">Pantalla negra</option>
+                <option value="buffering">Buffering</option>
+                <option value="ad">Ad</option>
+                <option value="repeated_ad">Ad repetido</option>
+                <option value="scene_change">Cambio de escena</option>
+              </select>
+            </div>
+            <div id="events" class="timeline"></div>
+          </div>
+        </section>
+
+        <section id="adminView" class="view hidden">
+          <div class="admin-layout">
+            <section class="panel">
+              <h2>Agregar camara</h2>
+              <p>Usa indices locales, RTSP o archivos de prueba.</p>
+              <form id="cameraForm" class="camera-form">
+                <input id="cameraName" placeholder="cam_01" aria-label="Nombre de camara" />
+                <input id="cameraSource" placeholder="rtsp://... o 0" aria-label="Fuente" />
+                <button type="submit">Agregar</button>
+              </form>
+            </section>
+            <section class="panel">
+              <h2>Camaras registradas</h2>
+              <div id="cameras" class="list"></div>
+            </section>
+          </div>
+        </section>
+      </section>
+
+      <div id="toast" class="toast hidden"></div>
+    </main>
+    <script src="./app.console.js"></script>
+  </body>
+</html>

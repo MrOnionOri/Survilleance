@@ -1,0 +1,17 @@
+{
+  "name": "streamwatch-svelte",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@sveltejs/vite-plugin-svelte": "5.0.3",
+    "vite": "6.0.7",
+    "svelte": "5.16.0"
+  },
+  "devDependencies": {}
+}

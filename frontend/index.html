@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StreamWatch AI</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">StreamWatch AI</p>
+          <h1>Monitoreo de streaming y pauta</h1>
+        </div>
+        <div id="session" class="session"></div>
+      </section>
+
+      <section id="loginPanel" class="panel auth-panel">
+        <div>
+          <h2>Acceso</h2>
+          <p>Ingresa con tu cuenta para revisar eventos, cámaras y etiquetas.</p>
+        </div>
+        <form id="loginForm" class="form-row">
+          <input id="email" type="email" value="admin@streamwatch.example.com" aria-label="Email" />
+          <input id="password" type="password" value="admin123" aria-label="Password" />
+          <button type="submit">Entrar</button>
+        </form>
+      </section>
+
+      <section id="appPanel" class="workspace hidden">
+        <section class="metrics">
+          <article>
+            <span id="cameraCount">0</span>
+            <p>Cámaras</p>
+          </article>
+          <article>
+            <span id="eventCount">0</span>
+            <p>Eventos</p>
+          </article>
+          <article>
+            <span id="criticalCount">0</span>
+            <p>Alertas críticas</p>
+          </article>
+        </section>
+
+        <section class="panel review-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Revision de video</h2>
+              <p>Reproduce los chunks como una linea continua, selecciona un rango y guardalo para estudio de IA.</p>
+            </div>
+            <select id="reviewCamera" aria-label="Camara para revision"></select>
+          </div>
+
+          <video id="reviewVideo" class="review-video" controls muted playsinline></video>
+
+          <div id="historyTimeline" class="history-timeline"></div>
+
+          <div class="range-tools">
+            <label>
+              Inicio
+              <input id="rangeStart" type="range" min="0" max="0" value="0" />
+            </label>
+            <label>
+              Fin
+              <input id="rangeEnd" type="range" min="0" max="0" value="0" />
+            </label>
+          </div>
+
+          <form id="manualEventForm" class="manual-event-form">
+            <select id="manualEventType" aria-label="Tipo de error">
+              <option value="freeze">Freeze</option>
+              <option value="black_screen">Pantalla negra</option>
+              <option value="buffering">Buffering</option>
+              <option value="ad">Anuncio</option>
+              <option value="repeated_ad">Anuncio repetido</option>
+              <option value="normal">Normal</option>
+            </select>
+            <input id="manualNotes" placeholder="Notas para entrenamiento" aria-label="Notas" />
+            <button type="submit">Guardar rango</button>
+          </form>
+          <p id="selectedRange" class="selected-range">Sin grabaciones disponibles.</p>
+        </section>
+
+        <section class="grid">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Cámaras</h2>
+                <p>Fuentes RTSP, HDMI o archivo local para pruebas.</p>
+              </div>
+              <button id="refreshButton" type="button">Actualizar</button>
+            </div>
+            <form id="cameraForm" class="camera-form">
+              <input id="cameraName" placeholder="cam_01" aria-label="Nombre de cámara" />
+              <input id="cameraSource" placeholder="rtsp://... o 0" aria-label="Fuente" />
+              <button type="submit">Agregar</button>
+            </form>
+            <div id="cameras" class="list"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Eventos</h2>
+                <p>Freeze, pantalla negra, buffering, ads y repetición.</p>
+              </div>
+              <select id="eventFilter" aria-label="Filtro de evento">
+                <option value="">Todos</option>
+                <option value="freeze">Freeze</option>
+                <option value="black_screen">Pantalla negra</option>
+                <option value="buffering">Buffering</option>
+                <option value="ad">Ad</option>
+                <option value="repeated_ad">Ad repetido</option>
+                <option value="scene_change">Cambio de escena</option>
+              </select>
+            </div>
+            <div id="events" class="timeline"></div>
+          </div>
+        </section>
+      </section>
+
+      <div id="toast" class="toast hidden"></div>
+    </main>
+    <script src="./app.review.js"></script>
+  </body>
+</html>
