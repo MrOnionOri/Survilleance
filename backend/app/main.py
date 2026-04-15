@@ -13,19 +13,25 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
-from app.models import AIModel, Camera, Event, Label, TestSession, User
+from app.models import AIModel, Camera, DatasetVersion, Event, EventCategory, Label, TestSession, User
 from app.schemas import (
     CameraCreate,
     CameraRecordingStatus,
     CameraRead,
     CameraUpdate,
+    DatasetCreate,
+    DatasetRead,
+    DatasetStats,
     EventCreate,
+    EventCategoryCreate,
+    EventCategoryRead,
     EventRead,
+    BulkLabelCreate,
     LabelCreate,
     LabelRead,
     LoginRequest,
@@ -33,6 +39,7 @@ from app.schemas import (
     ModelCreate,
     ModelRead,
     RecordingChunk,
+    TrainRequest,
     Token,
     TestSessionCreate,
     TestSessionRead,
@@ -50,7 +57,7 @@ from app.security import (
     hash_password,
     verify_password,
 )
-from app.seed import seed_admin
+from app.seed import seed_admin, seed_event_categories
 
 
 settings = get_settings()
@@ -70,6 +77,7 @@ app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,6 +109,7 @@ class StreamHub:
 
 
 stream_hub = StreamHub()
+field_test_camera_ids: set[int] = set()
 
 
 @app.middleware("http")
@@ -121,13 +130,77 @@ async def access_log(request: Request, call_next):
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    run_lightweight_migrations()
     with SessionLocal() as db:
         seed_admin(db)
+        seed_event_categories(db)
+
+
+def run_lightweight_migrations() -> None:
+    with engine.begin() as connection:
+        if settings.database_url.startswith("postgres"):
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_x DOUBLE PRECISION"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_y DOUBLE PRECISION"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_width DOUBLE PRECISION"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_height DOUBLE PRECISION"))
+            connection.execute(text("ALTER TABLE events ALTER COLUMN type TYPE VARCHAR(120) USING type::text"))
+            connection.execute(text("ALTER TABLE labels ALTER COLUMN label TYPE VARCHAR(120) USING label::text"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS name VARCHAR(160)"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS purpose VARCHAR(120) DEFAULT 'event_classifier'"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS epochs INTEGER"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS status VARCHAR(40) DEFAULT 'registered'"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT FALSE"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS dataset_summary_json TEXT"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS metrics_json TEXT"))
+            connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS created_by_id INTEGER"))
+            connection.execute(text("ALTER TABLE dataset_versions ADD COLUMN IF NOT EXISTS parent_dataset_id INTEGER"))
+        elif settings.database_url.startswith("sqlite"):
+            columns = {row[1] for row in connection.execute(text("PRAGMA table_info(cameras)"))}
+            for column in ["roi_x", "roi_y", "roi_width", "roi_height"]:
+                if column not in columns:
+                    connection.execute(text(f"ALTER TABLE cameras ADD COLUMN {column} FLOAT"))
+            model_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(models)"))}
+            sqlite_model_columns = {
+                "name": "VARCHAR(160)",
+                "purpose": "VARCHAR(120) DEFAULT 'event_classifier'",
+                "epochs": "INTEGER",
+                "status": "VARCHAR(40) DEFAULT 'registered'",
+                "active": "BOOLEAN DEFAULT 0",
+                "dataset_summary_json": "TEXT",
+                "metrics_json": "TEXT",
+                "created_by_id": "INTEGER",
+            }
+            for column, column_type in sqlite_model_columns.items():
+                if column not in model_columns:
+                    connection.execute(text(f"ALTER TABLE models ADD COLUMN {column} {column_type}"))
+            dataset_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(dataset_versions)"))}
+            if "parent_dataset_id" not in dataset_columns:
+                connection.execute(text("ALTER TABLE dataset_versions ADD COLUMN parent_dataset_id INTEGER"))
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": settings.app_name}
+
+
+@app.get("/field-tests/cameras")
+def list_field_test_cameras(_: CanTrain) -> dict[str, list[int]]:
+    return {"camera_ids": sorted(field_test_camera_ids)}
+
+
+@app.post("/field-tests/cameras/{camera_id}")
+def start_field_test_camera(camera_id: int, db: Annotated[Session, Depends(get_db)], _: CanLabel) -> dict[str, str | int]:
+    camera = db.get(Camera, camera_id)
+    if not camera or not camera.enabled:
+        raise HTTPException(status_code=404, detail="Camera not found or disabled")
+    field_test_camera_ids.add(camera_id)
+    return {"status": "active", "camera_id": camera_id}
+
+
+@app.delete("/field-tests/cameras/{camera_id}")
+def stop_field_test_camera(camera_id: int, _: CanLabel) -> dict[str, str | int]:
+    field_test_camera_ids.discard(camera_id)
+    return {"status": "stopped", "camera_id": camera_id}
 
 
 @app.websocket("/ws/cameras/{camera_id}/stream")
@@ -204,6 +277,10 @@ def list_cameras(
             name=camera.name,
             source=camera.source,
             enabled=camera.enabled,
+            roi_x=camera.roi_x,
+            roi_y=camera.roi_y,
+            roi_width=camera.roi_width,
+            roi_height=camera.roi_height,
             created_at=camera.created_at,
             locked_by_test_id=locks.get(camera.id, (None, None))[0],
             locked_by_test_name=locks.get(camera.id, (None, None))[1],
@@ -226,9 +303,11 @@ def update_camera(camera_id: int, payload: CameraUpdate, db: Annotated[Session, 
     camera = db.get(Camera, camera_id)
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
-    if _camera_locked(db, camera_id):
+    changes = payload.model_dump(exclude_unset=True)
+    roi_fields = {"roi_x", "roi_y", "roi_width", "roi_height"}
+    if _camera_locked(db, camera_id) and any(field not in roi_fields for field in changes):
         raise HTTPException(status_code=409, detail="Camera is locked by a running test")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    for field, value in changes.items():
         setattr(camera, field, value)
     db.commit()
     db.refresh(camera)
@@ -310,6 +389,27 @@ def finish_test(test_id: int, db: Annotated[Session, Depends(get_db)], _: CanTra
     return _test_to_read(test)
 
 
+def ensure_category(db: Session, key: str) -> None:
+    if not db.scalar(select(EventCategory).where(EventCategory.key == key)):
+        raise HTTPException(status_code=422, detail=f"Unknown event category: {key}")
+
+
+@app.get("/categories", response_model=list[EventCategoryRead])
+def list_categories(db: Annotated[Session, Depends(get_db)], _: CanView) -> list[EventCategory]:
+    return list(db.scalars(select(EventCategory).order_by(EventCategory.name)))
+
+
+@app.post("/categories", response_model=EventCategoryRead, status_code=status.HTTP_201_CREATED)
+def create_category(payload: EventCategoryCreate, db: Annotated[Session, Depends(get_db)], _: CanConfigure) -> EventCategory:
+    if db.scalar(select(EventCategory).where(EventCategory.key == payload.key)):
+        raise HTTPException(status_code=409, detail="Category already exists")
+    category = EventCategory(**payload.model_dump())
+    db.add(category)
+    db.commit()
+    db.refresh(category)
+    return category
+
+
 @app.get("/events", response_model=list[EventRead])
 def list_events(
     db: Annotated[Session, Depends(get_db)],
@@ -330,6 +430,7 @@ def list_events(
 def create_event(payload: EventCreate, db: Annotated[Session, Depends(get_db)], _: CanTrain) -> Event:
     if not db.get(Camera, payload.camera_id):
         raise HTTPException(status_code=404, detail="Camera not found")
+    ensure_category(db, payload.type)
     event = Event(**payload.model_dump())
     db.add(event)
     db.commit()
@@ -343,6 +444,7 @@ def create_manual_event(payload: ManualEventCreate, db: Annotated[Session, Depen
         raise HTTPException(status_code=422, detail="end_time must be greater than start_time")
     if not db.get(Camera, payload.camera_id):
         raise HTTPException(status_code=404, detail="Camera not found")
+    ensure_category(db, payload.type)
 
     metadata = {
         "source": "manual_review",
@@ -370,11 +472,29 @@ def create_manual_event(payload: ManualEventCreate, db: Annotated[Session, Depen
 def label_event(payload: LabelCreate, db: Annotated[Session, Depends(get_db)], current_user: CanLabel) -> Label:
     if not db.get(Event, payload.event_id):
         raise HTTPException(status_code=404, detail="Event not found")
+    ensure_category(db, payload.label)
     label = Label(**payload.model_dump(), user_id=current_user.id)
     db.add(label)
     db.commit()
     db.refresh(label)
     return label
+
+
+@app.post("/events/labels/bulk", response_model=list[LabelRead], status_code=status.HTTP_201_CREATED)
+def bulk_label_events(payload: BulkLabelCreate, db: Annotated[Session, Depends(get_db)], current_user: CanLabel) -> list[Label]:
+    ensure_category(db, payload.label)
+    events = db.scalars(select(Event).where(Event.id.in_(payload.event_ids))).all()
+    if len(events) != len(set(payload.event_ids)):
+        raise HTTPException(status_code=422, detail="One or more events do not exist")
+    labels = [
+        Label(event_id=event.id, user_id=current_user.id, label=payload.label, notes=payload.notes)
+        for event in events
+    ]
+    db.add_all(labels)
+    db.commit()
+    for label in labels:
+        db.refresh(label)
+    return labels
 
 
 @app.get("/recordings", response_model=list[RecordingChunk])
@@ -473,22 +593,178 @@ def _chunk_start_time(path: Path) -> datetime | None:
 
 
 @app.get("/models", response_model=list[ModelRead])
-def list_models(db: Annotated[Session, Depends(get_db)], _: CanTrain) -> list[AIModel]:
-    return list(db.scalars(select(AIModel).order_by(desc(AIModel.created_at))))
+def list_models(
+    db: Annotated[Session, Depends(get_db)],
+    _: CanLabel,
+    purpose: str | None = None,
+) -> list[AIModel]:
+    query = select(AIModel).order_by(desc(AIModel.created_at))
+    if purpose:
+        query = query.where(AIModel.purpose == purpose)
+    return list(db.scalars(query))
 
 
 @app.post("/models", response_model=ModelRead, status_code=status.HTTP_201_CREATED)
-def register_model(payload: ModelCreate, db: Annotated[Session, Depends(get_db)], _: CanTrain) -> AIModel:
-    model = AIModel(**payload.model_dump())
+def register_model(payload: ModelCreate, db: Annotated[Session, Depends(get_db)], current_user: CanTrain) -> AIModel:
+    values = payload.model_dump()
+    if not values.get("version"):
+        values["version"] = make_model_version(values.get("purpose", "event_classifier"), values.get("epochs"))
+    if values.get("active"):
+        deactivate_models(db, values["purpose"])
+    model = AIModel(**values, created_by_id=current_user.id)
     db.add(model)
     db.commit()
     db.refresh(model)
     return model
 
 
-@app.post("/train")
-def train(_: CanTrain) -> dict[str, str]:
-    return {
-        "status": "queued",
-        "message": "Training pipeline placeholder. Connect this endpoint to a GPU worker when the dataset is ready.",
+@app.get("/models/active", response_model=ModelRead)
+def active_model(
+    db: Annotated[Session, Depends(get_db)],
+    _: CanLabel,
+    purpose: str = "event_classifier",
+) -> AIModel:
+    model = db.scalar(select(AIModel).where(AIModel.purpose == purpose, AIModel.active.is_(True)).order_by(desc(AIModel.created_at)))
+    if not model:
+        raise HTTPException(status_code=404, detail="No active model for this purpose")
+    return model
+
+
+@app.patch("/models/{model_id}/activate", response_model=ModelRead)
+def activate_model(model_id: int, db: Annotated[Session, Depends(get_db)], _: CanTrain) -> AIModel:
+    model = db.get(AIModel, model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    deactivate_models(db, model.purpose)
+    model.active = True
+    model.status = "active"
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+@app.get("/dataset/stats", response_model=DatasetStats)
+def dataset_stats(db: Annotated[Session, Depends(get_db)], _: CanLabel) -> DatasetStats:
+    categories = {category.key: 0 for category in db.scalars(select(EventCategory)).all()}
+    for label in db.scalars(select(Label)).all():
+        categories[label.label] = categories.get(label.label, 0) + 1
+    recordings_root = settings.streamwatch_data_dir / "recordings"
+    recordings = len(list(recordings_root.glob("test_*/cam_*/*/*.mp4"))) if recordings_root.exists() else 0
+    return DatasetStats(
+        events=len(list(db.scalars(select(Event.id)).all())),
+        labels=len(list(db.scalars(select(Label.id)).all())),
+        recordings=recordings,
+        categories=categories,
+    )
+
+
+@app.get("/datasets", response_model=list[DatasetRead])
+def list_datasets(db: Annotated[Session, Depends(get_db)], _: CanLabel) -> list[DatasetRead]:
+    datasets = db.scalars(select(DatasetVersion).order_by(desc(DatasetVersion.created_at))).all()
+    return [_dataset_to_read(dataset) for dataset in datasets]
+
+
+@app.post("/datasets", response_model=DatasetRead, status_code=status.HTTP_201_CREATED)
+def create_dataset(payload: DatasetCreate, db: Annotated[Session, Depends(get_db)], current_user: CanLabel) -> DatasetRead:
+    if payload.parent_dataset_id and not db.get(DatasetVersion, payload.parent_dataset_id):
+        raise HTTPException(status_code=404, detail="Parent dataset not found")
+    events = db.scalars(select(Event).where(Event.id.in_(payload.event_ids))).all()
+    if len(events) != len(set(payload.event_ids)):
+        raise HTTPException(status_code=422, detail="One or more events do not exist")
+    categories: dict[str, int] = {}
+    for event in events:
+        label = latest_event_label(event)
+        categories[label] = categories.get(label, 0) + 1
+    version = make_dataset_version(payload.name)
+    dataset = DatasetVersion(
+        version=version,
+        name=payload.name,
+        description=payload.description,
+        event_ids_json=json.dumps(sorted(set(payload.event_ids))),
+        summary_json=json.dumps({"events": len(events), "categories": categories}),
+        parent_dataset_id=payload.parent_dataset_id,
+        created_by_id=current_user.id,
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+    return _dataset_to_read(dataset)
+
+
+@app.post("/train", response_model=ModelRead, status_code=status.HTTP_201_CREATED)
+def train(payload: TrainRequest, db: Annotated[Session, Depends(get_db)], current_user: CanTrain) -> AIModel:
+    stats = dataset_stats(db, current_user)
+    dataset = db.get(DatasetVersion, payload.dataset_id) if payload.dataset_id else None
+    if payload.dataset_id and not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    version = make_model_version(payload.purpose, payload.epochs)
+    artifact_path = settings.streamwatch_data_dir / "models" / payload.purpose / version
+    artifact_path.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "version": version,
+        "purpose": payload.purpose,
+        "epochs": payload.epochs,
+        "notes": payload.notes,
+        "dataset_version": dataset.version if dataset else None,
+        "dataset": stats.model_dump(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
+    (artifact_path / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if payload.activate:
+        deactivate_models(db, payload.purpose)
+    model = AIModel(
+        version=version,
+        name=f"{payload.purpose} {version}",
+        purpose=payload.purpose,
+        path=str(artifact_path),
+        epochs=payload.epochs,
+        status="active" if payload.activate else "trained",
+        active=payload.activate,
+        dataset_summary_json=dataset.summary_json if dataset else json.dumps(stats.model_dump()),
+        metrics_json=json.dumps({"status": "placeholder", "accuracy": None}),
+        created_by_id=current_user.id,
+    )
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+def deactivate_models(db: Session, purpose: str) -> None:
+    for model in db.scalars(select(AIModel).where(AIModel.purpose == purpose, AIModel.active.is_(True))).all():
+        model.active = False
+        if model.status == "active":
+            model.status = "trained"
+
+
+def make_model_version(purpose: str, epochs: int | None) -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    epoch_part = f"e{epochs or 0:04d}"
+    return f"{purpose}_{epoch_part}_{stamp}"
+
+
+def make_dataset_version(name: str) -> str:
+    cleaned = "".join(char.lower() if char.isalnum() else "_" for char in name).strip("_") or "dataset"
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    return f"{cleaned[:40]}_{stamp}"
+
+
+def _dataset_to_read(dataset: DatasetVersion) -> DatasetRead:
+    return DatasetRead(
+        id=dataset.id,
+        version=dataset.version,
+        name=dataset.name,
+        description=dataset.description,
+        event_ids=json.loads(dataset.event_ids_json),
+        parent_dataset_id=dataset.parent_dataset_id,
+        summary_json=dataset.summary_json,
+        created_by_id=dataset.created_by_id,
+        created_at=dataset.created_at,
+    )
+
+
+def latest_event_label(event: Event) -> str:
+    if event.labels:
+        latest = sorted(event.labels, key=lambda label: label.created_at)[-1]
+        return latest.label
+    return event.type

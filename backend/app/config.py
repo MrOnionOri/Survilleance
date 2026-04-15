@@ -13,7 +13,14 @@ class Settings(BaseSettings):
     admin_email: str = "admin@streamwatch.example.com"
     admin_password: str = "admin123"
     streamwatch_data_dir: Path = Path("./data")
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://192.168.1.150:5173",
+    ]
+    cors_origin_regex: str | None = (
+        r"http://(localhost|127\.0\.0\.1|192\.168\.1\.150|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+):5173"
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

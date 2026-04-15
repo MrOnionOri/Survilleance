@@ -191,6 +191,7 @@ p {
 .camera-edit-form,
 .test-form,
 .user-form,
+.training-form,
 .metrics,
 .editor-layout,
 .admin-layout,
@@ -207,16 +208,379 @@ p {
 
 .form-row,
 .camera-form {
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .camera-edit-form {
-  grid-template-columns: 1fr 1fr auto auto auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
 }
 
 .user-form {
   grid-template-columns: 1fr 1fr 160px auto;
+}
+
+.training-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metrics.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.model-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.field-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+}
+
+.field-main,
+.field-side {
+  min-width: 0;
+}
+
+.field-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+}
+
+.field-controls label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.model-chip {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+}
+
+.field-stage {
+  position: relative;
+  overflow: hidden;
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #09110f;
+}
+
+.field-stage img {
+  display: block;
+  width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+}
+
+.field-detection-box {
+  position: absolute;
+  border: 2px solid #ffffff;
+  background: rgba(22, 126, 101, 0.12);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+}
+
+.field-detection-box span,
+.field-detection-label {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: #ffffff;
+  background: var(--danger);
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.field-detection-box span {
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.32);
+}
+
+.compact-event {
+  display: grid;
+  gap: 6px;
+}
+
+.dataset-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.dataset-toolbar button.active {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+.dataset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.dataset-curator {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(280px, 340px);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.dataset-sidebar {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.compact-toolbar {
+  margin-top: 0;
+}
+
+.dataset-event-list {
+  display: grid;
+  gap: 8px;
+  max-height: 560px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.dataset-event-row {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--text);
+  background: #ffffff;
+  text-align: left;
+}
+
+.dataset-event-row.active {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.dataset-event-row.selected {
+  background: #eef8f4;
+}
+
+.dataset-event-row small {
+  color: var(--muted);
+}
+
+.dataset-preview {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.dataset-preview-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #09110f;
+}
+
+.dataset-preview-stage img {
+  display: block;
+  width: 100%;
+  max-height: 620px;
+  object-fit: contain;
+}
+
+.preview-roi {
+  position: absolute;
+  border: 2px solid #ffffff;
+  background: rgba(22, 126, 101, 0.16);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.dataset-preview-info {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.dataset-preview-info h3 {
+  margin: 0 0 4px;
+}
+
+.dataset-selected-panel {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.selected-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.selected-panel-head h3,
+.selected-panel-head p {
+  margin: 0;
+}
+
+.selected-panel-head p {
+  color: var(--muted);
+}
+
+.selected-dataset-list {
+  display: grid;
+  gap: 10px;
+  max-height: 640px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.selected-dataset-item {
+  display: grid;
+  grid-template-columns: 82px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.selected-dataset-item.active {
+  border-color: var(--accent);
+  background: #eef8f4;
+}
+
+.selected-dataset-item small {
+  display: block;
+  color: var(--muted);
+  margin: 2px 0 6px;
+}
+
+.selected-thumb {
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: #09110f;
+}
+
+.selected-thumb img {
+  display: block;
+  width: 82px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.correction-tools {
+  display: grid;
+  gap: 8px;
+  min-width: min(260px, 100%);
+}
+
+.correction-tools label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.dataset-card {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--text);
+  background: #ffffff;
+  text-align: left;
+}
+
+.dataset-card.selected {
+  border-color: var(--accent);
+  background: #eef8f4;
+}
+
+.dataset-card img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #0b1512;
+}
+
+.dataset-card small {
+  color: var(--muted);
+}
+
+.dataset-create {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.bulk-label-bar {
+  display: grid;
+  grid-template-columns: 1fr minmax(180px, 260px) auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfb;
+}
+
+.bulk-label-bar span {
+  color: var(--muted);
+}
+
+.derived-note {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--muted);
+  background: #fbfcfb;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 10px;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .workspace {
@@ -602,6 +966,61 @@ p {
   background: #20312b;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 24, 22, 0.72);
+}
+
+.roi-modal {
+  width: min(980px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border-radius: 8px;
+  padding: 20px;
+  background: var(--panel);
+}
+
+.roi-canvas {
+  position: relative;
+  overflow: hidden;
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #09110f;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+}
+
+.roi-canvas img {
+  display: block;
+  width: 100%;
+  max-height: 62vh;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.roi-box {
+  position: absolute;
+  border: 2px solid #ffffff;
+  background: rgba(22, 126, 101, 0.22);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.46);
+  pointer-events: none;
+}
+
+.roi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
 @media (max-width: 820px) {
   .topbar,
   .auth-panel,
@@ -610,12 +1029,22 @@ p {
   .camera-edit-form,
   .test-form,
   .user-form,
+  .training-form,
+  .dataset-create,
+  .bulk-label-bar,
+  .derived-note,
   .metrics,
   .editor-layout,
   .admin-layout,
   .tests-layout,
   .range-tools,
-  .event {
+  .event,
+  .model-item,
+  .dataset-curator,
+  .dataset-preview-info,
+  .selected-dataset-item,
+  .field-layout,
+  .field-controls {
     display: grid;
     grid-template-columns: 1fr;
   }
@@ -625,6 +1054,11 @@ p {
   .camera-row,
   .row-actions,
   .browser-device-row {
+    display: grid;
+    justify-content: stretch;
+  }
+
+  .roi-actions {
     display: grid;
     justify-content: stretch;
   }

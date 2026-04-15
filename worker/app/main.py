@@ -10,7 +10,7 @@ import websocket
 import cv2
 
 from app.capture import ChunkRecorder, CircularFrameBuffer, reconnecting_frames, save_frame
-from app.detectors import RuleEngine, perceptual_hash
+from app.detectors import RuleEngine, ScreenRoi, perceptual_hash
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -49,6 +49,12 @@ def tests(access_token: str) -> list[dict]:
     response = requests.get(f"{BACKEND_URL}/tests", headers=headers(access_token), timeout=10)
     response.raise_for_status()
     return response.json()
+
+
+def field_test_camera_ids(access_token: str) -> set[int]:
+    response = requests.get(f"{BACKEND_URL}/field-tests/cameras", headers=headers(access_token), timeout=10)
+    response.raise_for_status()
+    return set(response.json().get("camera_ids", []))
 
 
 def post_event(access_token: str, payload: dict) -> None:
@@ -101,12 +107,23 @@ def should_process_camera(camera: dict) -> bool:
     return True
 
 
+def screen_roi(camera: dict) -> ScreenRoi | None:
+    values = [camera.get("roi_x"), camera.get("roi_y"), camera.get("roi_width"), camera.get("roi_height")]
+    if any(value is None for value in values):
+        return None
+    x, y, width, height = (float(value) for value in values)
+    if width <= 0 or height <= 0:
+        return None
+    return ScreenRoi(x=x, y=y, width=width, height=height)
+
+
 def process_camera(access_token: str, camera: dict) -> None:
-    engine = RuleEngine()
+    engine = RuleEngine(roi=screen_roi(camera))
     buffer = CircularFrameBuffer(max_frames=150)
     chunk_seconds = int(camera.get("chunk_seconds", CHUNK_SECONDS))
     test_id = int(camera["test_id"]) if camera.get("test_id") else None
-    recorder = ChunkRecorder(DATA_DIR, camera_id=camera["id"], fps=CAPTURE_FPS, chunk_seconds=chunk_seconds, test_id=test_id)
+    should_record = bool(test_id)
+    recorder = ChunkRecorder(DATA_DIR, camera_id=camera["id"], fps=CAPTURE_FPS, chunk_seconds=chunk_seconds, test_id=test_id) if should_record else None
     source = camera["source"]
     camera_id = camera["id"]
     last_snapshot_at: datetime | None = None
@@ -116,7 +133,7 @@ def process_camera(access_token: str, camera: dict) -> None:
     try:
         for frame in reconnecting_frames(source, fps=CAPTURE_FPS):
             buffer.add(frame)
-            chunk_path = recorder.write(frame)
+            chunk_path = recorder.write(frame) if recorder else None
             now = datetime.utcnow()
             if last_snapshot_at is None or (now - last_snapshot_at).total_seconds() >= SNAPSHOT_EVERY_SECONDS:
                 save_frame(frame, DATA_DIR / "snapshots" / f"cam_{camera_id}.jpg")
@@ -134,20 +151,23 @@ def process_camera(access_token: str, camera: dict) -> None:
                 evidence_dir = DATA_DIR / "events" / detection.type
                 image_path = evidence_dir / f"cam_{camera_id}_{timestamp}.jpg"
                 save_frame(frame, image_path)
-                metadata = {**detection.metadata, "recording_path": str(chunk_path)}
+                metadata = {**detection.metadata, "mode": "recording" if should_record else "field_test"}
+                if chunk_path:
+                    metadata["recording_path"] = str(chunk_path)
                 payload = {
                     "camera_id": camera_id,
                     "type": detection.type,
                     "confidence": detection.confidence,
                     "image_path": str(image_path),
-                    "clip_path": str(chunk_path),
+                    "clip_path": str(chunk_path) if chunk_path else None,
                     "ad_fingerprint": perceptual_hash(frame) if detection.type in {"scene_change", "ad"} else None,
                     "metadata_json": json.dumps(metadata),
                 }
                 post_event(access_token, payload)
     finally:
         streamer.close()
-        recorder.close()
+        if recorder:
+            recorder.close()
 
 
 def main() -> None:
@@ -157,15 +177,20 @@ def main() -> None:
             access_token = token()
             running_tests = [test for test in tests(access_token) if test.get("status") == "running"]
             running_camera_ids = {camera_id for test in running_tests for camera_id in test.get("camera_ids", [])}
+            field_camera_ids = field_test_camera_ids(access_token)
+            process_camera_ids = running_camera_ids | field_camera_ids
             active = []
             for camera in cameras(access_token):
-                if camera["id"] not in running_camera_ids or not camera.get("enabled") or not should_process_camera(camera):
+                if camera["id"] not in process_camera_ids or not camera.get("enabled") or not should_process_camera(camera):
                     continue
                 matching_tests = [test for test in running_tests if camera["id"] in test.get("camera_ids", [])]
                 if matching_tests:
                     latest_test = sorted(matching_tests, key=lambda test: test["started_at"])[-1]
                     camera["test_id"] = latest_test["id"]
                     camera["chunk_seconds"] = int(latest_test.get("chunk_seconds", CHUNK_SECONDS))
+                elif camera["id"] in field_camera_ids:
+                    camera["field_test"] = True
+                    camera["chunk_seconds"] = int(camera.get("chunk_seconds", CHUNK_SECONDS))
                 active.append(camera)
             active_ids = {camera["id"] for camera in active}
             if not active:

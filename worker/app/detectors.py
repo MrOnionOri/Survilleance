@@ -21,16 +21,27 @@ class Detection:
     metadata: dict[str, float | int | str]
 
 
+@dataclass(frozen=True)
+class ScreenRoi:
+    x: float
+    y: float
+    width: float
+    height: float
+
+
 class RuleEngine:
-    def __init__(self, config: DetectorConfig | None = None) -> None:
+    def __init__(self, config: DetectorConfig | None = None, roi: ScreenRoi | None = None) -> None:
         self.config = config or DetectorConfig()
+        self.roi = roi
         self.previous_gray: np.ndarray | None = None
         self.previous_hist: np.ndarray | None = None
         self.freeze_count = 0
 
     def analyze(self, frame: np.ndarray) -> list[Detection]:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        analysis_frame = self._crop(frame)
+        gray = cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2GRAY)
         detections: list[Detection] = []
+        base_metadata = self._roi_metadata(frame)
 
         mean_intensity = float(gray.mean())
         if mean_intensity < self.config.black_threshold:
@@ -38,7 +49,7 @@ class RuleEngine:
                 Detection(
                     type="black_screen",
                     confidence=min(1.0, (self.config.black_threshold - mean_intensity) / self.config.black_threshold),
-                    metadata={"mean_intensity": mean_intensity},
+                    metadata={**base_metadata, "mean_intensity": mean_intensity},
                 )
             )
 
@@ -54,11 +65,11 @@ class RuleEngine:
                     Detection(
                         type="freeze",
                         confidence=min(1.0, score),
-                        metadata={"ssim": score, "frames": self.freeze_count},
+                        metadata={**base_metadata, "ssim": score, "frames": self.freeze_count},
                     )
                 )
 
-        hist = self._histogram(frame)
+        hist = self._histogram(analysis_frame)
         if self.previous_hist is not None:
             distance = float(cv2.compareHist(self.previous_hist, hist, cv2.HISTCMP_BHATTACHARYYA))
             if distance > self.config.scene_hist_threshold:
@@ -66,13 +77,37 @@ class RuleEngine:
                     Detection(
                         type="scene_change",
                         confidence=min(1.0, distance),
-                        metadata={"histogram_distance": distance},
+                        metadata={**base_metadata, "histogram_distance": distance},
                     )
                 )
 
         self.previous_gray = gray
         self.previous_hist = hist
         return detections
+
+    def _crop(self, frame: np.ndarray) -> np.ndarray:
+        if self.roi is None:
+            return frame
+        height, width = frame.shape[:2]
+        x1 = max(0, min(width - 1, int(self.roi.x * width)))
+        y1 = max(0, min(height - 1, int(self.roi.y * height)))
+        x2 = max(x1 + 1, min(width, int((self.roi.x + self.roi.width) * width)))
+        y2 = max(y1 + 1, min(height, int((self.roi.y + self.roi.height) * height)))
+        return frame[y1:y2, x1:x2]
+
+    def _roi_metadata(self, frame: np.ndarray) -> dict[str, float | int | str]:
+        if self.roi is None:
+            return {"analysis_region": "full_frame"}
+        height, width = frame.shape[:2]
+        return {
+            "analysis_region": "screen_roi",
+            "roi_x": self.roi.x,
+            "roi_y": self.roi.y,
+            "roi_width": self.roi.width,
+            "roi_height": self.roi.height,
+            "frame_width": width,
+            "frame_height": height,
+        }
 
     @staticmethod
     def _histogram(frame: np.ndarray) -> np.ndarray:
@@ -90,4 +125,3 @@ def perceptual_hash(frame: np.ndarray, size: int = 8) -> str:
     median = np.median(low_freq[1:, 1:])
     bits = low_freq > median
     return "".join("1" if bit else "0" for bit in bits.flatten())
-

@@ -33,6 +33,13 @@ Servicios:
 - Frontend Svelte: http://localhost:5173
 - PostgreSQL: localhost:5432
 
+En LAN, otros equipos deben entrar usando la IP del equipo donde corre Docker:
+
+- Frontend: http://192.168.1.150:5173
+- API docs: http://192.168.1.150:8000/docs
+
+El frontend detecta el host desde la URL, asi que al abrir `http://192.168.1.150:5173` consultara automaticamente al backend en `http://192.168.1.150:8000`. Si Windows pregunta por firewall, permite conexiones privadas para los puertos `5173` y `8000`.
+
 Usuario inicial por defecto:
 
 - Email: `admin@streamwatch.example.com`
@@ -76,6 +83,82 @@ El dashboard solo carga los chunks de la prueba seleccionada. Esto evita mezclar
 - cambiar la camara principal dentro de una prueba multi-camara
 
 Nota: el chunk actual termina de ser reproducible cuando FFmpeg lo cierra al rotar. Con `CHUNK_SECONDS=60`, un video nuevo puede tardar hasta 60 segundos en aparecer completo en el editor.
+
+## Secciones administrativas
+
+- **Fuentes**: altas dinamicas de camaras, fuentes RTSP/locales, estado y recalibracion de ROI.
+- **Usuarios**: altas de usuarios y asignacion de roles.
+- **Sistema**: categorias IA y acciones de entrenamiento.
+- **IA Lab**: videos/chunks, eventos, etiquetas, entrenamiento y seleccion de modelos activos.
+- **Campo de pruebas**: vivo de camara con overlay de detecciones recientes y modelo activo.
+
+## IA Lab y modelos
+
+La seccion **IA Lab** concentra todo lo relacionado con datos y deep learning:
+
+- resumen de videos/chunks, eventos y etiquetas
+- distribucion de etiquetas por categoria
+- constructor visual de dataset con tarjetas de evidencia
+- guardado de datasets versionados
+- entrenamiento de modelos por proposito
+- registro de artefactos externos
+- seleccion del modelo activo para cada uso
+
+Los propositos iniciales son:
+
+- `event_classifier`
+- `ad_fingerprint`
+- `roi_detector`
+- `quality_detector`
+
+Al entrenar desde la plataforma, el backend genera una version con esta forma:
+
+```text
+<purpose>_e<epochs>_<yyyymmdd>_<hhmmss>
+```
+
+Ejemplo:
+
+```text
+event_classifier_e0010_20260415_153000
+```
+
+Cada modelo guarda version, ruta del artefacto, epochs, accuracy, estado, resumen del dataset y si esta activo. Solo admin/supervisor pueden entrenar, registrar artefactos o activar un modelo; analistas pueden revisar datos y versiones.
+
+En **Campo de pruebas** puedes seleccionar camara y proposito de modelo. La vista registra temporalmente esa camara para procesamiento en vivo, abre el vivo por WebSocket, consulta detecciones recientes del worker y dibuja el ROI/recuadro con el nombre detectado. Este modo no graba chunks si la camara no esta dentro de una prueba formal. Hoy usa las detecciones existentes; al conectar inferencia real, el mismo panel puede mostrar predicciones del modelo activo.
+
+El flujo visual recomendado es:
+
+1. Revisar eventos en **IA Lab > Constructor visual de dataset**
+2. Buscar por camara, categoria o id en la lista izquierda
+3. Revisar la evidencia grande al centro con el ROI usado en la deteccion
+4. Agregar o quitar la evidencia del dataset
+4. Guardar un dataset con nombre y notas
+5. Entrenar usando ese dataset desde **Nuevo entrenamiento**
+
+Tambien puedes reutilizar datasets guardados:
+
+- **Cargar al constructor**: reemplaza la seleccion actual con las evidencias de ese dataset y guarda el nuevo dataset como derivado.
+- **Combinar**: agrega las evidencias de ese dataset a la seleccion actual.
+
+## Region de pantalla y categorias
+
+Los detectores no tienen que analizar toda la camara. Cada camara puede tener una ROI de pantalla en coordenadas normalizadas:
+
+- `roi_x`
+- `roi_y`
+- `roi_width`
+- `roi_height`
+
+Los valores van de `0` a `1`. Por ejemplo, si la pantalla ocupa casi todo el centro de la imagen, una ROI aproximada podria ser `x=0.10`, `y=0.12`, `width=0.80`, `height=0.72`. Si la ROI queda vacia, se analiza todo el frame.
+
+Las detecciones de `black_screen`, `freeze` y `scene_change` se calculan sobre esa zona de contenido, no sobre toda la camara. Esto permite apuntar una webcam a una TV o monitor y detectar sucesos dentro de la reproduccion.
+
+Desde **Fuentes > Fuentes registradas > Recalibrar ROI** puedes marcar el rectangulo visualmente sobre el ultimo snapshot de la camara. El boton **Sugerir pantalla** intenta proponer una ROI a partir del contenido visible; si no encuentra una zona confiable, usa un marco central que puedes ajustar arrastrando de nuevo.
+
+Si una camara se mueve durante una prueba, se puede recalibrar la ROI sin desbloquear la camara. La fuente, el estado y el borrado siguen bloqueados mientras la prueba esta corriendo.
+
+Las categorias de sucesos son editables desde **Sistema > Categorias IA**. Las categorias creadas ahi aparecen en el editor y en eventos para etiquetar rangos de video y alimentar el entrenamiento. La gestion de usuarios vive en la seccion **Usuarios**.
 
 ## Video en vivo
 
