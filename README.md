@@ -285,6 +285,21 @@ Para encontrar el indice correcto de la webcam y descartar camaras negras:
 .\scripts\probe-local-cameras.ps1
 ```
 
+Salida esperada (ejemplo):
+
+```text
+camera_0=ok mean_intensity=126.31 snapshot=camera_probe/camera_0.jpg
+camera_1=not_available
+camera_2=ok mean_intensity=84.57 snapshot=camera_probe/camera_2.jpg
+```
+
+Interpretacion rapida:
+
+- `camera_N=ok`: ese `N` es el numero que debes registrar en **Fuentes > Fuente** (por ejemplo `0` o `2`).
+- `not_available`: no existe camara en ese indice.
+- `no_frame`: la camara abre pero no entrego frame util; prueba cerrar apps que la esten usando y vuelve a ejecutar.
+- `mean_intensity` muy bajo (cercano a `0`): imagen muy oscura/negra, prueba otro indice o espera unos segundos.
+
 El script guarda imagenes en:
 
 ```text
