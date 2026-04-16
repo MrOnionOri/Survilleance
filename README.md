@@ -254,7 +254,25 @@ El sistema soporta fuentes locales y online al mismo tiempo usando dos workers c
 - Worker Docker: procesa fuentes online/network, como `rtsp://...`, `http://...`.
 - Worker local Windows: procesa webcams locales, como `0`, `1`, `2`.
 
-El servicio `worker` esta en un perfil opcional de Docker y tiene `WORKER_SOURCE_SCOPE=network`, asi evita intentar abrir webcams locales desde Linux. Para camaras RTSP o fuentes visibles desde Docker:
+### Flujo recomendado en rama `no-docker-mysql` (sin Docker)
+
+En esta rama puedes correr todo local en Windows sin `docker compose`:
+
+```powershell
+.\scripts\run-local-backend-mysql.ps1
+.\scripts\run-local-frontend.ps1
+.\scripts\run-local-worker.ps1
+```
+
+Para detectar indices de webcam locales:
+
+```powershell
+.\scripts\probe-local-cameras.ps1
+```
+
+Si en la salida aparece `camera_0=ok ...`, en **Fuentes > Fuente** debes registrar `0` (solo el numero).
+
+Si quieres un esquema hibrido (backend/frontend en Docker + webcam por worker local), el servicio `worker` de Docker usa `WORKER_SOURCE_SCOPE=network` para no abrir webcams de Windows. Para camaras RTSP o fuentes visibles desde Docker:
 
 ```bash
 docker compose --profile worker up --build
@@ -273,6 +291,16 @@ cd "d:\dev\Projectos Mixtos\Survilleance"
 .\scripts\run-local-worker.ps1
 ```
 
+Ese script configura `WORKER_CAMERA_BACKEND=msmf` para Windows (mas compatible en equipos donde `dshow` falla con mensajes tipo `can't be used to capture by index`).
+
+Si sigues viendo spam con `VIDEOIO(DSHOW)` al ejecutar `run-local-worker.ps1`, probablemente estas en una version anterior del repo. Actualiza la rama y verifica:
+
+```powershell
+git pull
+git log -1 --oneline
+Get-Content .\scripts\run-local-worker.ps1 | Select-String "WORKER_CAMERA_BACKEND|OPENCV_LOG_LEVEL"
+```
+
 Si quieres instalar dependencias antes:
 
 ```powershell
@@ -284,6 +312,22 @@ Para encontrar el indice correcto de la webcam y descartar camaras negras:
 ```powershell
 .\scripts\probe-local-cameras.ps1
 ```
+
+Salida esperada (ejemplo):
+
+```text
+camera_0=ok mean_intensity=126.31 snapshot=camera_probe/camera_0.jpg
+camera_1=not_available
+camera_2=ok mean_intensity=84.57 snapshot=camera_probe/camera_2.jpg
+```
+
+Interpretacion rapida:
+
+- `camera_N=ok`: ese `N` es el numero que debes registrar en **Fuentes > Fuente** (por ejemplo `0` o `2`).
+- `not_available`: no existe camara en ese indice.
+- `no_frame`: la camara abre pero no entrego frame util; prueba cerrar apps que la esten usando y vuelve a ejecutar.
+- `mean_intensity` muy bajo (cercano a `0`): imagen muy oscura/negra, prueba otro indice o espera unos segundos.
+- En algunos equipos OpenCV imprime lineas como `obsensor ... Camera index out of range` al probar indices vacios; si tambien ves `camera_0=ok ...`, puedes usar `0` sin problema.
 
 El script guarda imagenes en:
 
@@ -312,6 +356,7 @@ Stream online -> http://servidor/video.mp4
 | `ADMIN_EMAIL` | Usuario inicial | `admin@streamwatch.local` |
 | `ADMIN_PASSWORD` | Password inicial | `admin123` |
 | `STREAMWATCH_DATA_DIR` | Directorio de evidencia | `./data` |
+| `WORKER_CAMERA_BACKEND` | Backend local de webcam (`auto`, `msmf`, `dshow`, `default`) | `auto` |
 
 ## Roadmap implementado
 

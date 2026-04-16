@@ -15,7 +15,11 @@ $env:WORKER_EMAIL = "admin@streamwatch.example.com"
 $env:WORKER_PASSWORD = "admin123"
 $env:STREAMWATCH_DATA_DIR = $Root
 $env:WORKER_SOURCE_SCOPE = "local"
+$env:WORKER_CAMERA_BACKEND = "msmf"
+$env:OPENCV_LOG_LEVEL = "FATAL"
+
+Write-Host "WORKER_CAMERA_BACKEND=$env:WORKER_CAMERA_BACKEND"
+Write-Host "OPENCV_LOG_LEVEL=$env:OPENCV_LOG_LEVEL"
 
 Set-Location $WorkerDir
 & $PythonExe -m app.main
-

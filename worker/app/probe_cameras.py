@@ -1,7 +1,20 @@
+import os
 from pathlib import Path
 from time import sleep
 
+# Reduce noisy OpenCV backend logs (e.g., obsensor index out of range).
+os.environ.setdefault("OPENCV_LOG_LEVEL", "FATAL")
+
 import cv2
+
+
+def open_index(index: int) -> cv2.VideoCapture:
+    if os.name == "nt":
+        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if capture.isOpened():
+            return capture
+        capture.release()
+    return cv2.VideoCapture(index)
 
 
 def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
@@ -9,7 +22,7 @@ def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
     root.mkdir(parents=True, exist_ok=True)
 
     for index in range(max_index + 1):
-        capture = cv2.VideoCapture(index)
+        capture = open_index(index)
         if not capture.isOpened():
             print(f"camera_{index}=not_available")
             continue
@@ -36,4 +49,3 @@ def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
 
 if __name__ == "__main__":
     probe()
-
