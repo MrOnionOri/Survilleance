@@ -47,6 +47,66 @@ Usuario inicial por defecto:
 
 Configurable con variables de entorno en `docker-compose.yml`.
 
+## Rama local sin Docker + MySQL
+
+Esta rama `no-docker-mysql` permite correr la plataforma sin Docker ni WSL.
+
+Requisitos en Windows:
+
+- Python 3.12+
+- Node.js 22+
+- MySQL Server 8+
+- Git
+
+Crear base de datos y usuario:
+
+```powershell
+mysql -u root -p < scripts/mysql-init.sql
+```
+
+La URL por defecto para esta rama es:
+
+```text
+mysql+pymysql://streamwatch:streamwatch@localhost:3306/streamwatch?charset=utf8mb4
+```
+
+Puedes cambiarla con la variable `DATABASE_URL` o copiando:
+
+```powershell
+copy backend\.env.mysql.example backend\.env
+```
+
+Arrancar backend local:
+
+```powershell
+.\scripts\run-local-backend-mysql.ps1
+```
+
+Arrancar frontend local:
+
+```powershell
+.\scripts\run-local-frontend.ps1
+```
+
+Arrancar worker local para webcams/camaras conectadas a la computadora:
+
+```powershell
+.\scripts\run-local-worker.ps1
+```
+
+URLs:
+
+- Frontend: http://localhost:5173
+- Backend: http://localhost:8000
+- API docs: http://localhost:8000/docs
+
+Notas:
+
+- El backend crea las tablas automaticamente al iniciar.
+- MySQL reemplaza a PostgreSQL en esta rama.
+- El worker local no usa Docker y puede abrir camaras fisicas de Windows.
+- Para camaras IP/RTSP tambien puedes registrarlas desde **Fuentes**.
+
 ## Desarrollo local backend
 
 ```bash

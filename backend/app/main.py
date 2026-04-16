@@ -176,6 +176,38 @@ def run_lightweight_migrations() -> None:
             dataset_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(dataset_versions)"))}
             if "parent_dataset_id" not in dataset_columns:
                 connection.execute(text("ALTER TABLE dataset_versions ADD COLUMN parent_dataset_id INTEGER"))
+        elif settings.database_url.startswith("mysql"):
+            mysql_add_column_if_missing(connection, "cameras", "roi_x", "FLOAT")
+            mysql_add_column_if_missing(connection, "cameras", "roi_y", "FLOAT")
+            mysql_add_column_if_missing(connection, "cameras", "roi_width", "FLOAT")
+            mysql_add_column_if_missing(connection, "cameras", "roi_height", "FLOAT")
+            mysql_modify_enum_column(connection, "events", "type", "VARCHAR(120)")
+            mysql_modify_enum_column(connection, "labels", "label", "VARCHAR(120)")
+            mysql_add_column_if_missing(connection, "models", "name", "VARCHAR(160)")
+            mysql_add_column_if_missing(connection, "models", "purpose", "VARCHAR(120) DEFAULT 'event_classifier'")
+            mysql_add_column_if_missing(connection, "models", "epochs", "INTEGER")
+            mysql_add_column_if_missing(connection, "models", "status", "VARCHAR(40) DEFAULT 'registered'")
+            mysql_add_column_if_missing(connection, "models", "active", "BOOLEAN DEFAULT FALSE")
+            mysql_add_column_if_missing(connection, "models", "dataset_summary_json", "TEXT")
+            mysql_add_column_if_missing(connection, "models", "metrics_json", "TEXT")
+            mysql_add_column_if_missing(connection, "models", "created_by_id", "INTEGER")
+            mysql_add_column_if_missing(connection, "dataset_versions", "parent_dataset_id", "INTEGER")
+
+
+def mysql_column_exists(connection, table: str, column: str) -> bool:
+    result = connection.execute(text(f"SHOW COLUMNS FROM {table} LIKE :column"), {"column": column})
+    return result.first() is not None
+
+
+def mysql_add_column_if_missing(connection, table: str, column: str, column_type: str) -> None:
+    if not mysql_column_exists(connection, table, column):
+        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"))
+
+
+def mysql_modify_enum_column(connection, table: str, column: str, column_type: str) -> None:
+    result = connection.execute(text(f"SHOW COLUMNS FROM {table} LIKE :column"), {"column": column}).mappings().first()
+    if result and str(result["Type"]).lower().startswith("enum"):
+        connection.execute(text(f"ALTER TABLE {table} MODIFY COLUMN {column} {column_type}"))
 
 
 @app.get("/health")
