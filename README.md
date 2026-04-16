@@ -292,6 +292,7 @@ cd "d:\dev\Projectos Mixtos\Survilleance"
 ```
 
 Ese script configura `WORKER_CAMERA_BACKEND=msmf` para Windows (mas compatible en equipos donde `dshow` falla con mensajes tipo `can't be used to capture by index`).
+Tambien define `CAPTURE_FPS=10` y `STREAM_WS_EVERY_SECONDS=0.10` para que el vivo del dashboard se vea mas fluido y no parezca congelado.
 
 Si sigues viendo spam con `VIDEOIO(DSHOW)` al ejecutar `run-local-worker.ps1`, probablemente estas en una version anterior del repo. Actualiza la rama y verifica:
 
@@ -357,6 +358,8 @@ Stream online -> http://servidor/video.mp4
 | `ADMIN_PASSWORD` | Password inicial | `admin123` |
 | `STREAMWATCH_DATA_DIR` | Directorio de evidencia | `./data` |
 | `WORKER_CAMERA_BACKEND` | Backend local de webcam (`auto`, `msmf`, `dshow`, `default`) | `auto` |
+| `CAPTURE_FPS` | FPS de captura en worker | `5` |
+| `STREAM_WS_EVERY_SECONDS` | Intervalo (seg) de envio por WebSocket al frontend | `0.25` |
 
 ## Roadmap implementado
 
