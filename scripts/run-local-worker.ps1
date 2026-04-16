@@ -15,7 +15,8 @@ $env:WORKER_EMAIL = "admin@streamwatch.example.com"
 $env:WORKER_PASSWORD = "admin123"
 $env:STREAMWATCH_DATA_DIR = $Root
 $env:WORKER_SOURCE_SCOPE = "local"
+if (-not $env:WORKER_DEBUG) { $env:WORKER_DEBUG = "0" }
+if ($env:WORKER_DEBUG -ne "0") { Write-Host "WORKER_DEBUG activo: $env:WORKER_DEBUG" }
 
 Set-Location $WorkerDir
 & $PythonExe -m app.main
-
