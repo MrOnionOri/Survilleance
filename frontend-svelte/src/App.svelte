@@ -65,6 +65,7 @@
   let aiCorrectedLabel = "";
   let bulkDatasetLabel = "";
   let selectedDatasetEvents = [];
+  let datasetEventCache = [];
   let aiDatasetEvents = [];
   let aiPreviewEvent = null;
   let fieldCameraId = "";
@@ -126,7 +127,9 @@
   $: {
     selectedAiEventId;
     aiDatasetEvents;
-    aiPreviewEvent = aiDatasetEvents.find((event) => event.id === selectedAiEventId) || aiDatasetEvents[0] || null;
+    datasetEventCache;
+    const availableEvents = [...aiDatasetEvents, ...datasetEventCache];
+    aiPreviewEvent = availableEvents.find((event) => event.id === selectedAiEventId) || availableEvents[0] || null;
   }
   $: if (aiPreviewEvent && (!aiCorrectedLabel || !eventTypes.includes(aiCorrectedLabel))) {
     aiCorrectedLabel = latestLabelForEvent(aiPreviewEvent);
@@ -755,12 +758,23 @@
   }
 
   function selectedDatasetEventObjects() {
+    const availableEvents = [...events, ...datasetEventCache];
     return selectedDatasetEvents
-      .map((eventId) => events.find((event) => event.id === eventId))
+      .map((eventId) => availableEvents.find((event) => event.id === eventId))
       .filter(Boolean);
   }
 
-  function loadDatasetIntoBuilder(dataset) {
+  async function ensureDatasetEvents(eventIds) {
+    const knownIds = new Set([...events, ...datasetEventCache].map((event) => event.id));
+    const missingIds = eventIds.filter((eventId) => !knownIds.has(eventId));
+    if (!missingIds.length) return;
+    const loaded = await api(`/events?ids=${missingIds.join(",")}&limit=500`);
+    const nextById = new Map([...datasetEventCache, ...loaded].map((event) => [event.id, event]));
+    datasetEventCache = Array.from(nextById.values());
+  }
+
+  async function loadDatasetIntoBuilder(dataset) {
+    await ensureDatasetEvents(dataset.event_ids);
     selectedDatasetEvents = [...dataset.event_ids];
     parentDatasetId = dataset.id;
     datasetName = `${dataset.name} derivado`;
@@ -769,7 +783,8 @@
     notify(`Dataset cargado al constructor: ${dataset.name}`);
   }
 
-  function mergeDatasetIntoBuilder(dataset) {
+  async function mergeDatasetIntoBuilder(dataset) {
+    await ensureDatasetEvents(dataset.event_ids);
     selectedDatasetEvents = Array.from(new Set([...selectedDatasetEvents, ...dataset.event_ids]));
     parentDatasetId = parentDatasetId || dataset.id;
     selectedAiEventId = selectedAiEventId || dataset.event_ids[0] || null;
@@ -1822,8 +1837,8 @@
                     </div>
                     <div class="row-actions">
                       <span class="badge">{dataset.event_ids.length} clips</span>
-                      <button type="button" on:click={() => loadDatasetIntoBuilder(dataset)}>Cargar al constructor</button>
-                      <button type="button" class="secondary" on:click={() => mergeDatasetIntoBuilder(dataset)}>Combinar</button>
+                      <button type="button" on:click={() => loadDatasetIntoBuilder(dataset).catch((error) => notify(error.message))}>Cargar al constructor</button>
+                      <button type="button" class="secondary" on:click={() => mergeDatasetIntoBuilder(dataset).catch((error) => notify(error.message))}>Combinar</button>
                     </div>
                   </article>
                 {/each}

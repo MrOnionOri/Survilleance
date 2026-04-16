@@ -416,13 +416,19 @@ def list_events(
     _: CanView,
     camera_id: int | None = None,
     event_type: str | None = Query(default=None, alias="type"),
+    ids: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[Event]:
-    query = select(Event).order_by(desc(Event.timestamp)).limit(limit)
+    query = select(Event).order_by(desc(Event.timestamp))
+    if ids:
+        event_ids = [int(value) for value in ids.split(",") if value.strip().isdigit()]
+        query = query.where(Event.id.in_(event_ids))
     if camera_id:
         query = query.where(Event.camera_id == camera_id)
     if event_type:
         query = query.where(Event.type == event_type)
+    if not ids:
+        query = query.limit(limit)
     return list(db.scalars(query))
 
 
