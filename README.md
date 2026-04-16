@@ -272,6 +272,22 @@ Para detectar indices de webcam locales:
 
 Si en la salida aparece `camera_0=ok ...`, en **Fuentes > Fuente** debes registrar `0` (solo el numero).
 
+### Modo debug del worker local
+
+Si la camara sigue fallando, activa logs detallados del worker:
+
+```powershell
+$env:WORKER_DEBUG="1"
+.\scripts\run-local-worker.ps1
+```
+
+Con `WORKER_DEBUG=1` veras lineas `worker_debug ...` y `debug_capture ...` con:
+
+- filtros de camaras activas/inactivas
+- inicio/reinicio de procesos por camara
+- intentos de apertura (`direct`, `windows_dshow`, `index_fallback`)
+- fallos de lectura de frames y reconexion
+
 Si quieres un esquema hibrido (backend/frontend en Docker + webcam por worker local), el servicio `worker` de Docker usa `WORKER_SOURCE_SCOPE=network` para no abrir webcams de Windows. Para camaras RTSP o fuentes visibles desde Docker:
 
 ```bash

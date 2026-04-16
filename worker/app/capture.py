@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +10,14 @@ from time import sleep
 import cv2
 import imageio_ffmpeg
 import numpy as np
+
+logger = logging.getLogger("streamwatch.worker.capture")
+WORKER_DEBUG = os.getenv("WORKER_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on", "debug"}
+
+
+def debug(message: str) -> None:
+    if WORKER_DEBUG:
+        logger.info("debug_capture %s", message)
 
 
 @dataclass
@@ -27,17 +36,24 @@ class CircularFrameBuffer:
 
 
 def open_capture(source: str) -> cv2.VideoCapture:
+    debug(f"open_attempt source={source!r} strategy=direct")
     capture = cv2.VideoCapture(source)
     if capture.isOpened():
+        debug(f"open_ok source={source!r} strategy=direct")
         return capture
+    debug(f"open_failed source={source!r} strategy=direct")
     if source.isdigit():
         index = int(source)
         if os.name == "nt":
             capture.release()
+            debug(f"open_attempt source={source!r} strategy=windows_dshow index={index}")
             capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
             if capture.isOpened():
+                debug(f"open_ok source={source!r} strategy=windows_dshow index={index}")
                 return capture
+            debug(f"open_failed source={source!r} strategy=windows_dshow index={index}")
         capture.release()
+        debug(f"open_attempt source={source!r} strategy=index_fallback index={index}")
         return cv2.VideoCapture(index)
     return capture
 
@@ -127,15 +143,22 @@ class ChunkRecorder:
 
 def reconnecting_frames(source: str, fps: int = 5):
     delay = 1 / max(fps, 1)
+    attempt = 0
     while True:
+        attempt += 1
         capture = open_capture(source)
         if not capture.isOpened():
+            debug(f"reconnect_wait source={source!r} attempt={attempt} reason=open_failed sleep_s=3")
             sleep(3)
             continue
 
+        debug(f"stream_started source={source!r} attempt={attempt}")
+        frame_failures = 0
         while True:
             ok, frame = capture.read()
             if not ok:
+                frame_failures += 1
+                debug(f"frame_read_failed source={source!r} failures={frame_failures} action=reopen")
                 capture.release()
                 sleep(3)
                 break

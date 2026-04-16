@@ -23,6 +23,12 @@ CHUNK_SECONDS = int(os.getenv("CHUNK_SECONDS", "60"))
 SNAPSHOT_EVERY_SECONDS = int(os.getenv("SNAPSHOT_EVERY_SECONDS", "2"))
 STREAM_WS_EVERY_SECONDS = float(os.getenv("STREAM_WS_EVERY_SECONDS", "0.25"))
 WORKER_SOURCE_SCOPE = os.getenv("WORKER_SOURCE_SCOPE", "all").lower()
+WORKER_DEBUG = os.getenv("WORKER_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on", "debug"}
+
+
+def debug(message: str) -> None:
+    if WORKER_DEBUG:
+        print(f"worker_debug {message}", flush=True)
 
 
 def token() -> str:
@@ -172,6 +178,11 @@ def process_camera(access_token: str, camera: dict) -> None:
 
 def main() -> None:
     processes: dict[int, tuple[Process, int]] = {}
+    debug(
+        "startup "
+        f"backend_url={BACKEND_URL} source_scope={WORKER_SOURCE_SCOPE} "
+        f"poll_seconds={POLL_SECONDS} capture_fps={CAPTURE_FPS} chunk_seconds={CHUNK_SECONDS}"
+    )
     while True:
         try:
             access_token = token()
@@ -180,8 +191,26 @@ def main() -> None:
             field_camera_ids = field_test_camera_ids(access_token)
             process_camera_ids = running_camera_ids | field_camera_ids
             active = []
-            for camera in cameras(access_token):
+            all_cameras = cameras(access_token)
+            debug(
+                "poll "
+                f"tests_running={len(running_tests)} field_test_cameras={sorted(field_camera_ids)} "
+                f"processable_ids={sorted(process_camera_ids)} cameras_total={len(all_cameras)}"
+            )
+            for camera in all_cameras:
                 if camera["id"] not in process_camera_ids or not camera.get("enabled") or not should_process_camera(camera):
+                    if WORKER_DEBUG:
+                        reasons = []
+                        if camera["id"] not in process_camera_ids:
+                            reasons.append("not_in_running_or_field_test")
+                        if not camera.get("enabled"):
+                            reasons.append("disabled")
+                        if not should_process_camera(camera):
+                            reasons.append(f"filtered_by_scope:{WORKER_SOURCE_SCOPE}")
+                        debug(
+                            f"camera_skip id={camera['id']} name={camera.get('name')} source={camera.get('source')} "
+                            f"reasons={','.join(reasons)}"
+                        )
                     continue
                 matching_tests = [test for test in running_tests if camera["id"] in test.get("camera_ids", [])]
                 if matching_tests:
@@ -192,9 +221,16 @@ def main() -> None:
                     camera["field_test"] = True
                     camera["chunk_seconds"] = int(camera.get("chunk_seconds", CHUNK_SECONDS))
                 active.append(camera)
+                debug(
+                    f"camera_active id={camera['id']} name={camera.get('name')} source={camera.get('source')} "
+                    f"test_id={camera.get('test_id')} field_test={bool(camera.get('field_test'))} "
+                    f"chunk_seconds={camera.get('chunk_seconds')}"
+                )
             active_ids = {camera["id"] for camera in active}
             if not active:
+                debug("no_active_cameras")
                 for camera_id, (process, _) in list(processes.items()):
+                    debug(f"process_stop id={camera_id} reason=no_active_cameras")
                     process.terminate()
                     process.join(timeout=5)
                     processes.pop(camera_id, None)
@@ -206,6 +242,11 @@ def main() -> None:
                 next_chunk_seconds = int(active_camera.get("chunk_seconds", CHUNK_SECONDS)) if active_camera else CHUNK_SECONDS
                 next_test_id = int(active_camera.get("test_id", 0)) if active_camera else 0
                 if camera_id not in active_ids or not process.is_alive() or chunk_seconds != next_chunk_seconds or next_test_id != int(getattr(process, "test_id", 0)):
+                    debug(
+                        f"process_restart id={camera_id} alive={process.is_alive()} "
+                        f"chunk_seconds_old={chunk_seconds} chunk_seconds_new={next_chunk_seconds} "
+                        f"test_id_old={int(getattr(process, 'test_id', 0))} test_id_new={next_test_id}"
+                    )
                     process.terminate()
                     process.join(timeout=5)
                     processes.pop(camera_id, None)
@@ -213,6 +254,10 @@ def main() -> None:
             for camera in active:
                 if camera["id"] in processes:
                     continue
+                debug(
+                    f"process_start id={camera['id']} source={camera.get('source')} "
+                    f"test_id={camera.get('test_id', 0)} chunk_seconds={camera.get('chunk_seconds', CHUNK_SECONDS)}"
+                )
                 process = Process(target=process_camera, args=(access_token, camera), daemon=True)
                 process.test_id = int(camera.get("test_id", 0))
                 process.start()
@@ -221,6 +266,7 @@ def main() -> None:
             sleep(POLL_SECONDS)
         except Exception as exc:
             print(f"worker_error={exc}", flush=True)
+            debug("loop_exception traceback_hidden=True")
             sleep(POLL_SECONDS)
 
 
