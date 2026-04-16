@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+import os
 from pathlib import Path
 import subprocess
 from time import sleep
@@ -27,8 +28,17 @@ class CircularFrameBuffer:
 
 def open_capture(source: str) -> cv2.VideoCapture:
     capture = cv2.VideoCapture(source)
-    if not capture.isOpened() and source.isdigit():
-        capture = cv2.VideoCapture(int(source))
+    if capture.isOpened():
+        return capture
+    if source.isdigit():
+        index = int(source)
+        if os.name == "nt":
+            capture.release()
+            capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            if capture.isOpened():
+                return capture
+        capture.release()
+        return cv2.VideoCapture(index)
     return capture
 
 
