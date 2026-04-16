@@ -1,9 +1,13 @@
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+import os
 from pathlib import Path
 import subprocess
 from time import sleep
+
+# Reduce noisy OpenCV logs for unavailable camera backends/indexes.
+os.environ.setdefault("OPENCV_LOG_LEVEL", "FATAL")
 
 import cv2
 import imageio_ffmpeg
@@ -25,10 +29,33 @@ class CircularFrameBuffer:
         return list(self.frames)
 
 
+def _open_local_camera(index: int) -> cv2.VideoCapture:
+    backend_mode = os.getenv("WORKER_CAMERA_BACKEND", "auto").strip().lower()
+    if backend_mode == "msmf":
+        attempts = [cv2.CAP_MSMF, None]
+    elif backend_mode == "dshow":
+        attempts = [cv2.CAP_DSHOW, None]
+    elif backend_mode == "default":
+        attempts = [None]
+    else:
+        # "auto": prefer default first, then MSMF on Windows.
+        attempts = [None, cv2.CAP_MSMF] if os.name == "nt" else [None]
+
+    for backend in attempts:
+        capture = cv2.VideoCapture(index) if backend is None else cv2.VideoCapture(index, backend)
+        if capture.isOpened():
+            return capture
+        capture.release()
+    return cv2.VideoCapture(index)
+
+
 def open_capture(source: str) -> cv2.VideoCapture:
     capture = cv2.VideoCapture(source)
-    if not capture.isOpened() and source.isdigit():
-        capture = cv2.VideoCapture(int(source))
+    if capture.isOpened():
+        return capture
+    if source.isdigit():
+        capture.release()
+        return _open_local_camera(int(source))
     return capture
 
 

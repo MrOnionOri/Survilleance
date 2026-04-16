@@ -91,6 +91,9 @@
   let draggingSelection = false;
   let liveSockets = {};
   let liveFrameUrls = {};
+  let liveReconnectTimers = {};
+  let liveWatchdogs = {};
+  let liveDesired = {};
   let roiCamera = null;
   let roiBox = { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
   let roiDragging = false;
@@ -933,27 +936,85 @@
     return `${protocol}${host}/ws/cameras/${cameraId}/stream?mode=viewer&token=${encodeURIComponent(token)}`;
   }
 
-  function startLive(camera) {
-    stopLive(camera.id);
-    const socket = new WebSocket(streamUrl(camera.id));
-    socket.binaryType = "blob";
-    socket.onmessage = (event) => {
-      const previousUrl = liveFrameUrls[camera.id];
-      const nextUrl = URL.createObjectURL(event.data);
-      liveFrameUrls = { ...liveFrameUrls, [camera.id]: nextUrl };
-      if (previousUrl) URL.revokeObjectURL(previousUrl);
-    };
-    socket.onopen = () => notify("Stream del worker conectado");
-    socket.onerror = () => notify("No se pudo conectar el stream del worker");
-    socket.onclose = () => {
-      const nextSockets = { ...liveSockets };
-      delete nextSockets[camera.id];
-      liveSockets = nextSockets;
-    };
-    liveSockets = { ...liveSockets, [camera.id]: socket };
+  function clearLiveReconnect(cameraId) {
+    const timer = liveReconnectTimers[cameraId];
+    if (!timer) return;
+    clearTimeout(timer);
+    const next = { ...liveReconnectTimers };
+    delete next[cameraId];
+    liveReconnectTimers = next;
   }
 
-  function stopLive(cameraId) {
+  function clearLiveWatchdog(cameraId) {
+    const timer = liveWatchdogs[cameraId];
+    if (!timer) return;
+    clearTimeout(timer);
+    const next = { ...liveWatchdogs };
+    delete next[cameraId];
+    liveWatchdogs = next;
+  }
+
+  function resetLiveWatchdog(cameraId) {
+    clearLiveWatchdog(cameraId);
+    const timer = setTimeout(() => {
+      const socket = liveSockets[cameraId];
+      if (socket && socket.readyState === WebSocket.OPEN) socket.close();
+    }, 4500);
+    liveWatchdogs = { ...liveWatchdogs, [cameraId]: timer };
+  }
+
+  function scheduleLiveReconnect(cameraId, delayMs = 1500) {
+    if (!liveDesired[cameraId] || liveReconnectTimers[cameraId]) return;
+    const timer = setTimeout(() => {
+      const next = { ...liveReconnectTimers };
+      delete next[cameraId];
+      liveReconnectTimers = next;
+      connectLive(cameraId);
+    }, delayMs);
+    liveReconnectTimers = { ...liveReconnectTimers, [cameraId]: timer };
+  }
+
+  function connectLive(cameraId) {
+    if (!liveDesired[cameraId]) return;
+    clearLiveReconnect(cameraId);
+    const socket = new WebSocket(streamUrl(cameraId));
+    socket.binaryType = "blob";
+    socket.onmessage = (event) => {
+      const previousUrl = liveFrameUrls[cameraId];
+      const nextUrl = URL.createObjectURL(event.data);
+      liveFrameUrls = { ...liveFrameUrls, [cameraId]: nextUrl };
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      resetLiveWatchdog(cameraId);
+    };
+    socket.onopen = () => resetLiveWatchdog(cameraId);
+    socket.onerror = () => {
+      socket.close();
+    };
+    socket.onclose = () => {
+      const nextSockets = { ...liveSockets };
+      delete nextSockets[cameraId];
+      liveSockets = nextSockets;
+      clearLiveWatchdog(cameraId);
+      scheduleLiveReconnect(cameraId);
+    };
+    liveSockets = { ...liveSockets, [cameraId]: socket };
+  }
+
+  function startLive(camera) {
+    liveDesired = { ...liveDesired, [camera.id]: true };
+    stopLive(camera.id, { keepDesired: true });
+    connectLive(camera.id);
+  }
+
+  function stopLive(cameraId, options = {}) {
+    const { keepDesired = false } = options;
+    if (!keepDesired) {
+      const desired = { ...liveDesired };
+      delete desired[cameraId];
+      liveDesired = desired;
+    }
+    clearLiveReconnect(cameraId);
+    clearLiveWatchdog(cameraId);
     const socket = liveSockets[cameraId];
     if (socket) {
       socket.close();
