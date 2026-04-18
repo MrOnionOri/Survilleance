@@ -94,7 +94,12 @@ class FrameStreamer:
 
 def is_local_source(source: str) -> bool:
     normalized = source.strip().lower()
-    return normalized.isdigit() or normalized.startswith("/dev/video") or normalized.startswith("dshow:")
+    return (
+        normalized.isdigit()
+        or normalized.startswith("/dev/video")
+        or normalized.startswith("dshow:")
+        or normalized.startswith("avfoundation:")
+    )
 
 
 def should_process_camera(camera: dict) -> bool:

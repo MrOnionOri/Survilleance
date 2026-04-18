@@ -2,6 +2,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+import platform
 import subprocess
 from time import sleep
 
@@ -26,10 +27,22 @@ class CircularFrameBuffer:
 
 
 def open_capture(source: str) -> cv2.VideoCapture:
+    normalized = source.strip().lower()
+    if normalized.isdigit():
+        return open_camera_index(int(normalized))
+    if normalized.startswith("avfoundation:"):
+        return open_camera_index(int(normalized.split(":", 1)[1]))
+
     capture = cv2.VideoCapture(source)
-    if not capture.isOpened() and source.isdigit():
-        capture = cv2.VideoCapture(int(source))
     return capture
+
+
+def open_camera_index(index: int) -> cv2.VideoCapture:
+    if platform.system() == "Darwin":
+        capture = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
+        if capture.isOpened():
+            return capture
+    return cv2.VideoCapture(index)
 
 
 def save_frame(frame: np.ndarray, path: Path) -> None:

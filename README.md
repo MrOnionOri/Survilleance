@@ -47,6 +47,63 @@ Usuario inicial por defecto:
 
 Configurable con variables de entorno en `docker-compose.yml`.
 
+## Arranque recomendado en macOS
+
+En macOS ejecuta los servicios principales con Docker y deja el worker fuera de Docker para que pueda pedir permisos de camara y detectar webcams locales o camaras USB conectadas por HUB.
+
+Terminal 1: backend, frontend y base de datos por Docker:
+
+```bash
+./scripts/run-docker-services-macos.sh
+```
+
+Terminal 2: preparar el worker local:
+
+```bash
+./scripts/setup-local-worker-macos.sh
+```
+
+El worker requiere Python 3.10 o superior. Si tu `python3` apunta a una version vieja, puedes indicar otro binario:
+
+```bash
+PYTHON_BIN=/opt/homebrew/bin/python3.12 ./scripts/setup-local-worker-macos.sh
+```
+
+Terminal 2: detectar indices de camaras locales:
+
+```bash
+./scripts/probe-local-cameras-macos.sh 8
+```
+
+El probe guarda snapshots en:
+
+```text
+worker/camera_probe/camera_0.jpg
+worker/camera_probe/camera_1.jpg
+```
+
+Usa el indice que se vea bien en el dashboard:
+
+```text
+Webcam Mac -> 0
+Camara USB HUB 1 -> 1
+Camara USB HUB 2 -> 2
+```
+
+Luego ejecuta el worker local:
+
+```bash
+./scripts/run-local-worker-macos.sh
+```
+
+Si macOS no entrega frames, revisa permisos en **System Settings > Privacy & Security > Camera** y habilita la app desde donde ejecutas el worker, por ejemplo Terminal, iTerm o VS Code. Despues cierra y vuelve a abrir esa terminal.
+
+Notas para HUB USB en macOS:
+
+- Los indices `0`, `1`, `2` pueden cambiar si desconectas/reconectas el HUB.
+- Vuelve a ejecutar `./scripts/probe-local-cameras-macos.sh 8` despues de cambiar el HUB o reiniciar.
+- El worker usa `WORKER_SOURCE_SCOPE=local`, asi que solo procesa fuentes locales; las fuentes RTSP/HTTP pueden seguir procesandose por un worker Docker con el perfil `worker` si lo necesitas.
+
 ## Desarrollo local backend
 
 ```bash
@@ -192,12 +249,24 @@ $env:STREAMWATCH_DATA_DIR="d:\dev\Projectos Mixtos\Survilleance"
 El sistema soporta fuentes locales y online al mismo tiempo usando dos workers con filtros:
 
 - Worker Docker: procesa fuentes online/network, como `rtsp://...`, `http://...`.
-- Worker local Windows: procesa webcams locales, como `0`, `1`, `2`.
+- Worker local macOS/Windows: procesa webcams locales, como `0`, `1`, `2`.
 
 El servicio `worker` esta en un perfil opcional de Docker y tiene `WORKER_SOURCE_SCOPE=network`, asi evita intentar abrir webcams locales desde Linux. Para camaras RTSP o fuentes visibles desde Docker:
 
 ```bash
 docker compose --profile worker up --build
+```
+
+Para webcam local en macOS, ejecuta solo `db backend frontend` en Docker:
+
+```bash
+./scripts/run-docker-services-macos.sh
+```
+
+Luego corre el worker local desde otra terminal:
+
+```bash
+./scripts/run-local-worker-macos.sh
 ```
 
 Para webcam local en Windows, ejecuta solo `db backend frontend` en Docker:

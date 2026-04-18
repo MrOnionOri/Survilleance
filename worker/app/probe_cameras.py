@@ -1,7 +1,11 @@
 from pathlib import Path
 from time import sleep
+import argparse
+import os
 
 import cv2
+
+from app.capture import open_capture
 
 
 def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
@@ -9,7 +13,7 @@ def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
     root.mkdir(parents=True, exist_ok=True)
 
     for index in range(max_index + 1):
-        capture = cv2.VideoCapture(index)
+        capture = open_capture(str(index))
         if not capture.isOpened():
             print(f"camera_{index}=not_available")
             continue
@@ -35,5 +39,8 @@ def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
 
 
 if __name__ == "__main__":
-    probe()
-
+    parser = argparse.ArgumentParser(description="Probe local camera indexes.")
+    parser.add_argument("--max-index", type=int, default=int(os.getenv("CAMERA_PROBE_MAX_INDEX", "5")))
+    parser.add_argument("--output-dir", default=os.getenv("CAMERA_PROBE_OUTPUT_DIR", "camera_probe"))
+    args = parser.parse_args()
+    probe(max_index=args.max_index, output_dir=args.output_dir)
