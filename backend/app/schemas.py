@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -31,6 +32,13 @@ class CameraCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     source: str = Field(min_length=1)
     enabled: bool = True
+    capture_fps: int = Field(default=5, ge=1, le=60)
+    rotation_degrees: Literal[0, 90, 180, 270] = 0
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
+    digital_brightness: int = Field(default=0, ge=-100, le=100)
+    digital_contrast: float = Field(default=1.0, ge=0.1, le=3.0)
+    digital_gamma: float = Field(default=1.0, ge=0.1, le=3.0)
     roi_x: float | None = Field(default=None, ge=0, le=1)
     roi_y: float | None = Field(default=None, ge=0, le=1)
     roi_width: float | None = Field(default=None, gt=0, le=1)
@@ -41,6 +49,13 @@ class CameraUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     source: str | None = Field(default=None, min_length=1)
     enabled: bool | None = None
+    capture_fps: int | None = Field(default=None, ge=1, le=60)
+    rotation_degrees: Literal[0, 90, 180, 270] | None = None
+    flip_horizontal: bool | None = None
+    flip_vertical: bool | None = None
+    digital_brightness: int | None = Field(default=None, ge=-100, le=100)
+    digital_contrast: float | None = Field(default=None, ge=0.1, le=3.0)
+    digital_gamma: float | None = Field(default=None, ge=0.1, le=3.0)
     roi_x: float | None = Field(default=None, ge=0, le=1)
     roi_y: float | None = Field(default=None, ge=0, le=1)
     roi_width: float | None = Field(default=None, gt=0, le=1)

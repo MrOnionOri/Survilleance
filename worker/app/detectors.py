@@ -37,6 +37,11 @@ class RuleEngine:
         self.previous_hist: np.ndarray | None = None
         self.freeze_count = 0
 
+    def reset_history(self) -> None:
+        self.previous_gray = None
+        self.previous_hist = None
+        self.freeze_count = 0
+
     def analyze(self, frame: np.ndarray) -> list[Detection]:
         analysis_frame = self._crop(frame)
         gray = cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2GRAY)
@@ -53,7 +58,7 @@ class RuleEngine:
                 )
             )
 
-        if self.previous_gray is not None:
+        if self.previous_gray is not None and self.previous_gray.shape == gray.shape:
             score = float(ssim(self.previous_gray, gray))
             if score > self.config.freeze_ssim_threshold:
                 self.freeze_count += 1
@@ -68,6 +73,8 @@ class RuleEngine:
                         metadata={**base_metadata, "ssim": score, "frames": self.freeze_count},
                     )
                 )
+        elif self.previous_gray is not None:
+            self.freeze_count = 0
 
         hist = self._histogram(analysis_frame)
         if self.previous_hist is not None:

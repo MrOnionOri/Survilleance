@@ -260,6 +260,24 @@ p {
   color: var(--muted);
 }
 
+.camera-tuning-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+}
+
+.camera-tuning-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.camera-tuning-grid .check-row {
+  align-self: center;
+}
+
 .model-chip {
   display: flex;
   align-items: center;
@@ -275,7 +293,8 @@ p {
   background: #09110f;
 }
 
-.field-stage img {
+.field-stage img,
+.field-stage video {
   display: block;
   width: 100%;
   max-height: 68vh;
@@ -665,6 +684,22 @@ p {
   padding: 14px;
 }
 
+.tile-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.tile-actions button {
+  flex: 1 1 128px;
+  min-width: 0;
+}
+
+.tile-actions .badge {
+  align-self: center;
+  flex: 0 0 auto;
+}
+
 .tile-body p,
 .item p,
 .event p {
@@ -1044,7 +1079,8 @@ p {
   .dataset-preview-info,
   .selected-dataset-item,
   .field-layout,
-  .field-controls {
+  .field-controls,
+  .camera-tuning-grid {
     display: grid;
     grid-template-columns: 1fr;
   }

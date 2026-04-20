@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 import time
@@ -7,7 +8,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -89,15 +90,125 @@ app.mount("/media", StaticFiles(directory=settings.streamwatch_data_dir), name="
 class StreamHub:
     def __init__(self) -> None:
         self.viewers: dict[int, set[WebSocket]] = {}
+        self.init_segments: dict[int, bytes] = {}
+        self.producer_buffers: dict[int, bytearray] = {}
+        self.pending_init: dict[int, bytearray] = {}
+        self.pending_media: dict[int, bytearray] = {}
+        self.jpeg_frames: dict[int, bytes] = {}
+        self.jpeg_versions: dict[int, int] = {}
+        self.jpeg_conditions: dict[int, asyncio.Condition] = {}
 
     async def add_viewer(self, camera_id: int, websocket: WebSocket) -> None:
         await websocket.accept()
         self.viewers.setdefault(camera_id, set()).add(websocket)
+        init_segment = self.init_segments.get(camera_id)
+        if init_segment:
+            try:
+                await websocket.send_bytes(init_segment)
+            except Exception:
+                self.remove_viewer(camera_id, websocket)
 
     def remove_viewer(self, camera_id: int, websocket: WebSocket) -> None:
         self.viewers.get(camera_id, set()).discard(websocket)
 
     async def broadcast(self, camera_id: int, frame: bytes) -> None:
+        for chunk in self.video_chunks(camera_id, frame):
+            await self._broadcast(camera_id, chunk)
+
+    async def update_jpeg(self, camera_id: int, frame: bytes) -> None:
+        self.jpeg_frames[camera_id] = frame
+        self.jpeg_versions[camera_id] = self.jpeg_versions.get(camera_id, 0) + 1
+        condition = self.jpeg_conditions.setdefault(camera_id, asyncio.Condition())
+        async with condition:
+            condition.notify_all()
+
+    async def mjpeg_frames(self, camera_id: int):
+        boundary = b"--streamwatch\r\nContent-Type: image/jpeg\r\nCache-Control: no-cache\r\n\r\n"
+        version = -1
+        condition = self.jpeg_conditions.setdefault(camera_id, asyncio.Condition())
+        while True:
+            current_version = self.jpeg_versions.get(camera_id, 0)
+            if current_version == version:
+                async with condition:
+                    try:
+                        await asyncio.wait_for(condition.wait(), timeout=10)
+                    except asyncio.TimeoutError:
+                        pass
+                current_version = self.jpeg_versions.get(camera_id, 0)
+            frame = self.jpeg_frames.get(camera_id)
+            if frame and current_version != version:
+                version = current_version
+                yield boundary + frame + b"\r\n"
+
+    def reset_producer(self, camera_id: int) -> None:
+        self.init_segments.pop(camera_id, None)
+        self.producer_buffers.pop(camera_id, None)
+        self.pending_init.pop(camera_id, None)
+        self.pending_media.pop(camera_id, None)
+
+    def video_chunks(self, camera_id: int, chunk: bytes) -> list[bytes]:
+        buffer = self.producer_buffers.setdefault(camera_id, bytearray())
+        buffer.extend(chunk)
+        chunks: list[bytes] = []
+
+        while True:
+            box = self._pop_complete_mp4_box(buffer)
+            if box is None:
+                break
+            box_type = box[4:8]
+            if box_type in {b"ftyp", b"moov"} and camera_id not in self.init_segments:
+                pending_init = self.pending_init.setdefault(camera_id, bytearray())
+                pending_init.extend(box)
+                if box_type == b"moov":
+                    init_segment = bytes(pending_init)
+                    self.init_segments[camera_id] = init_segment
+                    self.pending_init.pop(camera_id, None)
+                    chunks.append(init_segment)
+                continue
+
+            if box_type == b"moof":
+                pending_media = self.pending_media.setdefault(camera_id, bytearray())
+                if pending_media:
+                    chunks.append(bytes(pending_media))
+                    pending_media.clear()
+                pending_media.extend(box)
+                continue
+
+            if box_type == b"mdat":
+                pending_media = self.pending_media.setdefault(camera_id, bytearray())
+                pending_media.extend(box)
+                chunks.append(bytes(pending_media))
+                pending_media.clear()
+                continue
+
+            pending_media = self.pending_media.setdefault(camera_id, bytearray())
+            if pending_media:
+                pending_media.extend(box)
+
+        return chunks
+
+    def _pop_complete_mp4_box(self, buffer: bytearray) -> bytes | None:
+        if len(buffer) < 8:
+            return None
+
+        size = int.from_bytes(buffer[:4], "big")
+        header_size = 8
+        if size == 1:
+            if len(buffer) < 16:
+                return None
+            size = int.from_bytes(buffer[8:16], "big")
+            header_size = 16
+        elif size == 0:
+            size = len(buffer)
+
+        if size < header_size or len(buffer) < size:
+            return None
+
+        box = bytes(buffer[:size])
+        del buffer[:size]
+        return box
+
+    async def _broadcast(self, camera_id: int, frame: bytes) -> None:
         dead: list[WebSocket] = []
         for viewer in self.viewers.get(camera_id, set()).copy():
             try:
@@ -139,6 +250,13 @@ def on_startup() -> None:
 def run_lightweight_migrations() -> None:
     with engine.begin() as connection:
         if settings.database_url.startswith("postgres"):
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS capture_fps INTEGER DEFAULT 5"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rotation_degrees INTEGER DEFAULT 0"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS flip_horizontal BOOLEAN DEFAULT FALSE"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS flip_vertical BOOLEAN DEFAULT FALSE"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS digital_brightness INTEGER DEFAULT 0"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS digital_contrast DOUBLE PRECISION DEFAULT 1.0"))
+            connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS digital_gamma DOUBLE PRECISION DEFAULT 1.0"))
             connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_x DOUBLE PRECISION"))
             connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_y DOUBLE PRECISION"))
             connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_width DOUBLE PRECISION"))
@@ -156,6 +274,18 @@ def run_lightweight_migrations() -> None:
             connection.execute(text("ALTER TABLE dataset_versions ADD COLUMN IF NOT EXISTS parent_dataset_id INTEGER"))
         elif settings.database_url.startswith("sqlite"):
             columns = {row[1] for row in connection.execute(text("PRAGMA table_info(cameras)"))}
+            sqlite_camera_columns = {
+                "capture_fps": "INTEGER DEFAULT 5",
+                "rotation_degrees": "INTEGER DEFAULT 0",
+                "flip_horizontal": "BOOLEAN DEFAULT 0",
+                "flip_vertical": "BOOLEAN DEFAULT 0",
+                "digital_brightness": "INTEGER DEFAULT 0",
+                "digital_contrast": "FLOAT DEFAULT 1.0",
+                "digital_gamma": "FLOAT DEFAULT 1.0",
+            }
+            for column, column_type in sqlite_camera_columns.items():
+                if column not in columns:
+                    connection.execute(text(f"ALTER TABLE cameras ADD COLUMN {column} {column_type}"))
             for column in ["roi_x", "roi_y", "roi_width", "roi_height"]:
                 if column not in columns:
                     connection.execute(text(f"ALTER TABLE cameras ADD COLUMN {column} FLOAT"))
@@ -184,7 +314,7 @@ def health() -> dict[str, str]:
 
 
 @app.get("/field-tests/cameras")
-def list_field_test_cameras(_: CanTrain) -> dict[str, list[int]]:
+def list_field_test_cameras(_: CanLabel) -> dict[str, list[int]]:
     return {"camera_ids": sorted(field_test_camera_ids)}
 
 
@@ -203,6 +333,20 @@ def stop_field_test_camera(camera_id: int, _: CanLabel) -> dict[str, str | int]:
     return {"status": "stopped", "camera_id": camera_id}
 
 
+@app.get("/cameras/{camera_id}/mjpeg")
+async def camera_mjpeg(camera_id: int, token: str) -> StreamingResponse:
+    with SessionLocal() as db:
+        user = get_user_from_token(token, db)
+        camera = db.get(Camera, camera_id)
+    if not user or not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return StreamingResponse(
+        stream_hub.mjpeg_frames(camera_id),
+        media_type="multipart/x-mixed-replace; boundary=streamwatch",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.websocket("/ws/cameras/{camera_id}/stream")
 async def camera_stream(websocket: WebSocket, camera_id: int, token: str, mode: str = "viewer") -> None:
     with SessionLocal() as db:
@@ -217,10 +361,23 @@ async def camera_stream(websocket: WebSocket, camera_id: int, token: str, mode: 
             await websocket.close(code=1008)
             return
         await websocket.accept()
+        stream_hub.reset_producer(camera_id)
         try:
             while True:
                 frame = await websocket.receive_bytes()
                 await stream_hub.broadcast(camera_id, frame)
+        except WebSocketDisconnect:
+            return
+
+    if mode == "producer_jpeg":
+        if user.role.value not in {"admin", "supervisor"}:
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        try:
+            while True:
+                frame = await websocket.receive_bytes()
+                await stream_hub.update_jpeg(camera_id, frame)
         except WebSocketDisconnect:
             return
 
@@ -277,6 +434,13 @@ def list_cameras(
             name=camera.name,
             source=camera.source,
             enabled=camera.enabled,
+            capture_fps=camera.capture_fps or 5,
+            rotation_degrees=camera.rotation_degrees or 0,
+            flip_horizontal=bool(camera.flip_horizontal),
+            flip_vertical=bool(camera.flip_vertical),
+            digital_brightness=camera.digital_brightness or 0,
+            digital_contrast=camera.digital_contrast or 1.0,
+            digital_gamma=camera.digital_gamma or 1.0,
             roi_x=camera.roi_x,
             roi_y=camera.roi_y,
             roi_width=camera.roi_width,
@@ -287,6 +451,37 @@ def list_cameras(
         )
         for camera in cameras
     ]
+
+
+@app.get("/cameras/{camera_id}", response_model=CameraRead)
+def get_camera(camera_id: int, db: Annotated[Session, Depends(get_db)], _: CanView) -> CameraRead:
+    camera = db.get(Camera, camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    locks: dict[int, tuple[int, str]] = {}
+    for test in db.scalars(select(TestSession).where(TestSession.status == "running")).all():
+        for locked_camera_id in json.loads(test.camera_ids_json):
+            locks[locked_camera_id] = (test.id, test.name)
+    return CameraRead(
+        id=camera.id,
+        name=camera.name,
+        source=camera.source,
+        enabled=camera.enabled,
+        capture_fps=camera.capture_fps or 5,
+        rotation_degrees=camera.rotation_degrees or 0,
+        flip_horizontal=bool(camera.flip_horizontal),
+        flip_vertical=bool(camera.flip_vertical),
+        digital_brightness=camera.digital_brightness or 0,
+        digital_contrast=camera.digital_contrast or 1.0,
+        digital_gamma=camera.digital_gamma or 1.0,
+        roi_x=camera.roi_x,
+        roi_y=camera.roi_y,
+        roi_width=camera.roi_width,
+        roi_height=camera.roi_height,
+        created_at=camera.created_at,
+        locked_by_test_id=locks.get(camera.id, (None, None))[0],
+        locked_by_test_name=locks.get(camera.id, (None, None))[1],
+    )
 
 
 @app.post("/cameras", response_model=CameraRead, status_code=status.HTTP_201_CREATED)
@@ -304,8 +499,20 @@ def update_camera(camera_id: int, payload: CameraUpdate, db: Annotated[Session, 
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
     changes = payload.model_dump(exclude_unset=True)
-    roi_fields = {"roi_x", "roi_y", "roi_width", "roi_height"}
-    if _camera_locked(db, camera_id) and any(field not in roi_fields for field in changes):
+    live_tuning_fields = {
+        "roi_x",
+        "roi_y",
+        "roi_width",
+        "roi_height",
+        "capture_fps",
+        "rotation_degrees",
+        "flip_horizontal",
+        "flip_vertical",
+        "digital_brightness",
+        "digital_contrast",
+        "digital_gamma",
+    }
+    if _camera_locked(db, camera_id) and any(field not in live_tuning_fields for field in changes):
         raise HTTPException(status_code=409, detail="Camera is locked by a running test")
     for field, value in changes.items():
         setattr(camera, field, value)

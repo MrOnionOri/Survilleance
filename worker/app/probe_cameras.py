@@ -1,16 +1,27 @@
-from pathlib import Path
-from time import sleep
 import argparse
 import os
+import platform
+from dataclasses import dataclass
+from pathlib import Path
+from time import sleep
 
 import cv2
 
 from app.capture import open_capture
 
 
-def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
+@dataclass(frozen=True)
+class CameraProbeResult:
+    index: int
+    source: str
+    snapshot_path: Path
+    mean_intensity: float
+
+
+def probe(max_index: int = 5, output_dir: str = "camera_probe") -> list[CameraProbeResult]:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
+    detected: list[CameraProbeResult] = []
 
     for index in range(max_index + 1):
         capture = open_capture(str(index))
@@ -35,7 +46,41 @@ def probe(max_index: int = 5, output_dir: str = "camera_probe") -> None:
         mean_intensity = float(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean())
         path = root / f"camera_{index}.jpg"
         cv2.imwrite(str(path), frame)
-        print(f"camera_{index}=ok mean_intensity={mean_intensity:.2f} snapshot={path}")
+        source = str(index)
+        detected.append(CameraProbeResult(index=index, source=source, snapshot_path=path, mean_intensity=mean_intensity))
+        print(f"camera_{index}=ok source={source} mean_intensity={mean_intensity:.2f} snapshot={path}")
+
+    print_probe_summary(detected)
+    return detected
+
+
+def print_probe_summary(detected: list[CameraProbeResult]) -> None:
+    print("")
+    print("Resumen de camaras locales")
+    print("--------------------------")
+    if not detected:
+        print("No detecte camaras locales abiertas por OpenCV.")
+        if platform.system() == "Darwin":
+            print("En macOS revisa System Settings > Privacy & Security > Camera y habilita Terminal, iTerm o VS Code.")
+        print("Tambien verifica que otra app no tenga ocupada la camara.")
+        return
+
+    for result in detected:
+        print(
+            f"- Camara indice {result.index}: en el dashboard coloca Fuente = {result.source} "
+            f"(snapshot: {result.snapshot_path}, brillo medio: {result.mean_intensity:.2f})"
+        )
+
+    print("")
+    print("Ejemplos para registrar en Fuentes:")
+    for result in detected:
+        print(f"  Nombre: Camara {result.index} | Fuente: {result.source}")
+
+    if platform.system() == "Darwin":
+        print("")
+        print("Tip macOS: si prefieres ser explicito, tambien puedes usar Fuente = avfoundation:<indice>.")
+        for result in detected:
+            print(f"  Fuente alternativa para camara {result.index}: avfoundation:{result.index}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -54,6 +54,13 @@ class Camera(Base):
     name: Mapped[str] = mapped_column(String(120), index=True)
     source: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(default=True)
+    capture_fps: Mapped[int] = mapped_column(Integer, default=5)
+    rotation_degrees: Mapped[int] = mapped_column(Integer, default=0)
+    flip_horizontal: Mapped[bool] = mapped_column(default=False)
+    flip_vertical: Mapped[bool] = mapped_column(default=False)
+    digital_brightness: Mapped[int] = mapped_column(Integer, default=0)
+    digital_contrast: Mapped[float] = mapped_column(Float, default=1.0)
+    digital_gamma: Mapped[float] = mapped_column(Float, default=1.0)
     roi_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     roi_y: Mapped[float | None] = mapped_column(Float, nullable=True)
     roi_width: Mapped[float | None] = mapped_column(Float, nullable=True)

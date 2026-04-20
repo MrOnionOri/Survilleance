@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
 
   const API_URL = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`;
   const defaultEventTypes = ["normal", "freeze", "black_screen", "buffering", "ad", "repeated_ad", "scene_change"];
@@ -27,6 +27,13 @@
   let password = "admin123";
   let cameraName = "";
   let cameraSource = "";
+  let cameraFps = 5;
+  let cameraRotation = 0;
+  let cameraFlipHorizontal = false;
+  let cameraFlipVertical = false;
+  let cameraBrightness = 0;
+  let cameraContrast = 1;
+  let cameraGamma = 1;
   let cameraRoiX = "";
   let cameraRoiY = "";
   let cameraRoiWidth = "";
@@ -35,6 +42,13 @@
   let editCameraName = "";
   let editCameraSource = "";
   let editCameraEnabled = true;
+  let editCameraFps = 5;
+  let editCameraRotation = 0;
+  let editCameraFlipHorizontal = false;
+  let editCameraFlipVertical = false;
+  let editCameraBrightness = 0;
+  let editCameraContrast = 1;
+  let editCameraGamma = 1;
   let editCameraRoiX = "";
   let editCameraRoiY = "";
   let editCameraRoiWidth = "";
@@ -72,6 +86,7 @@
   let fieldPurpose = "event_classifier";
   let fieldEvents = [];
   let fieldCamera = null;
+  let fieldCameraIds = [];
   let fieldPolling = null;
   let newUserEmail = "";
   let newUserPassword = "";
@@ -90,8 +105,14 @@
   let currentChunkIndex = -1;
   let draggingSelection = false;
   let liveSockets = {};
-  let liveFrameUrls = {};
+  let liveStreams = {};
+  let liveVideoElements = {};
+  let liveVideoUrls = {};
+  let liveFallbackUrls = {};
+  let liveRestartAttempts = {};
   let roiCamera = null;
+  let tuningCamera = null;
+  let tuningSaveTimer = null;
   let roiBox = { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
   let roiDragging = false;
   let roiDragStart = null;
@@ -181,6 +202,7 @@
       datasetStats = await api("/dataset/stats");
       datasets = await api("/datasets");
       models = await api("/models");
+      fieldCameraIds = (await api("/field-tests/cameras")).camera_ids || [];
     }
     if (activeTest) {
       activeTest = tests.find((test) => test.id === activeTest.id) || activeTest;
@@ -285,6 +307,72 @@
       roi_width: read("width"),
       roi_height: read("height"),
     };
+  }
+
+  function visualSettingsPayload(prefix = "") {
+    if (prefix === "edit") {
+      return {
+        rotation_degrees: Number(editCameraRotation),
+        flip_horizontal: Boolean(editCameraFlipHorizontal),
+        flip_vertical: Boolean(editCameraFlipVertical),
+        digital_brightness: Number(editCameraBrightness),
+        digital_contrast: Number(editCameraContrast),
+        digital_gamma: Number(editCameraGamma),
+      };
+    }
+    if (prefix === "tuning" && tuningCamera) {
+      return {
+        rotation_degrees: Number(tuningCamera.rotation_degrees || 0),
+        flip_horizontal: Boolean(tuningCamera.flip_horizontal),
+        flip_vertical: Boolean(tuningCamera.flip_vertical),
+        digital_brightness: Number(tuningCamera.digital_brightness || 0),
+        digital_contrast: Number(tuningCamera.digital_contrast || 1),
+        digital_gamma: Number(tuningCamera.digital_gamma || 1),
+      };
+    }
+    return {
+      rotation_degrees: Number(cameraRotation),
+      flip_horizontal: Boolean(cameraFlipHorizontal),
+      flip_vertical: Boolean(cameraFlipVertical),
+      digital_brightness: Number(cameraBrightness),
+      digital_contrast: Number(cameraContrast),
+      digital_gamma: Number(cameraGamma),
+    };
+  }
+
+  function normalizeCameraSettings(camera) {
+    return {
+      ...camera,
+      rotation_degrees: camera.rotation_degrees ?? 0,
+      flip_horizontal: Boolean(camera.flip_horizontal),
+      flip_vertical: Boolean(camera.flip_vertical),
+      digital_brightness: camera.digital_brightness ?? 0,
+      digital_contrast: camera.digital_contrast ?? 1,
+      digital_gamma: camera.digital_gamma ?? 1,
+    };
+  }
+
+  function visualSettingsSummary(camera) {
+    const rotation = camera.rotation_degrees ?? 0;
+    const flips = [
+      camera.flip_horizontal ? "H" : "",
+      camera.flip_vertical ? "V" : "",
+    ].filter(Boolean).join("/");
+    const brightness = camera.digital_brightness ?? 0;
+    const contrast = camera.digital_contrast ?? 1;
+    const gamma = camera.digital_gamma ?? 1;
+    return `Rot ${rotation} grados${flips ? ` - Flip ${flips}` : ""} - Brillo ${brightness} - Contraste ${contrast} - Gamma ${gamma}`;
+  }
+
+  function liveVisibleOutsideTuning(cameraId) {
+    return liveVideoUrls[cameraId] && tuningCamera?.id !== cameraId;
+  }
+
+  function changeView(viewId) {
+    activeView = viewId;
+    if (!["cameras", "field_test"].includes(viewId)) {
+      stopAllLive();
+    }
   }
 
   function clamp(value, min = 0, max = 1) {
@@ -444,10 +532,17 @@
     try {
       await api("/cameras", {
         method: "POST",
-        body: JSON.stringify({ name: cameraName, source: cameraSource, enabled: true, ...roiPayload() }),
+        body: JSON.stringify({ name: cameraName, source: cameraSource, enabled: true, capture_fps: Number(cameraFps), ...visualSettingsPayload(), ...roiPayload() }),
       });
       cameraName = "";
       cameraSource = "";
+      cameraFps = 5;
+      cameraRotation = 0;
+      cameraFlipHorizontal = false;
+      cameraFlipVertical = false;
+      cameraBrightness = 0;
+      cameraContrast = 1;
+      cameraGamma = 1;
       cameraRoiX = "";
       cameraRoiY = "";
       cameraRoiWidth = "";
@@ -464,6 +559,13 @@
     editCameraName = camera.name;
     editCameraSource = camera.source;
     editCameraEnabled = camera.enabled;
+    editCameraFps = camera.capture_fps ?? 5;
+    editCameraRotation = camera.rotation_degrees ?? 0;
+    editCameraFlipHorizontal = Boolean(camera.flip_horizontal);
+    editCameraFlipVertical = Boolean(camera.flip_vertical);
+    editCameraBrightness = camera.digital_brightness ?? 0;
+    editCameraContrast = camera.digital_contrast ?? 1;
+    editCameraGamma = camera.digital_gamma ?? 1;
     editCameraRoiX = camera.roi_x ?? "";
     editCameraRoiY = camera.roi_y ?? "";
     editCameraRoiWidth = camera.roi_width ?? "";
@@ -475,6 +577,13 @@
     editCameraName = "";
     editCameraSource = "";
     editCameraEnabled = true;
+    editCameraFps = 5;
+    editCameraRotation = 0;
+    editCameraFlipHorizontal = false;
+    editCameraFlipVertical = false;
+    editCameraBrightness = 0;
+    editCameraContrast = 1;
+    editCameraGamma = 1;
     editCameraRoiX = "";
     editCameraRoiY = "";
     editCameraRoiWidth = "";
@@ -490,6 +599,8 @@
           name: editCameraName,
           source: editCameraSource,
           enabled: editCameraEnabled,
+          capture_fps: Number(editCameraFps),
+          ...visualSettingsPayload("edit"),
           ...roiPayload("edit"),
         }),
       });
@@ -674,17 +785,91 @@
   }
 
   async function startFieldCamera(camera) {
+    const previousCameraId = Number(fieldCameraId);
+    if (previousCameraId && previousCameraId !== camera.id) {
+      stopLive(previousCameraId);
+    }
+    fieldCameraId = String(camera.id);
     await api(`/field-tests/cameras/${camera.id}`, { method: "POST" });
+    fieldCameraIds = Array.from(new Set([...fieldCameraIds, camera.id]));
     startLive(camera);
     startFieldPolling();
+    refreshFieldEvents();
+    notify(`IA activa para ${camera.name}`);
   }
 
-  async function stopFieldCamera() {
-    if (fieldCameraId) {
-      await api(`/field-tests/cameras/${fieldCameraId}`, { method: "DELETE" }).catch(() => null);
-      stopLive(Number(fieldCameraId));
+  async function startCameraFromViewer(camera) {
+    if (canLabel) {
+      await startFieldCamera(camera);
+      return;
     }
-    stopFieldPolling();
+    startLive(camera);
+  }
+
+  async function openLiveTuning(camera) {
+    if (!canConfigure) return;
+    stopLive(camera.id);
+    tuningCamera = normalizeCameraSettings(camera);
+    await tick();
+    if (!isFieldCameraActive(camera.id)) {
+      await startCameraFromViewer(camera);
+    } else if (!liveSockets[camera.id]) {
+      startLive(camera);
+    }
+  }
+
+  async function closeLiveTuning(resumeLive = true) {
+    const camera = tuningCamera;
+    const wasLive = camera ? Boolean(liveSockets[camera.id]) : false;
+    if (tuningSaveTimer) clearTimeout(tuningSaveTimer);
+    tuningSaveTimer = null;
+    if (camera) {
+      stopLive(camera.id);
+    }
+    tuningCamera = null;
+    if (resumeLive && camera && wasLive && activeView === "cameras") {
+      await tick();
+      startLive(camera);
+    }
+  }
+
+  function scheduleLiveTuningSave() {
+    if (!tuningCamera) return;
+    if (tuningSaveTimer) clearTimeout(tuningSaveTimer);
+    tuningSaveTimer = setTimeout(() => {
+      saveLiveTuning().catch((error) => notify(error.message));
+    }, 250);
+  }
+
+  async function saveLiveTuning() {
+    if (!tuningCamera || !canConfigure) return;
+    const updated = await api(`/cameras/${tuningCamera.id}`, {
+      method: "PATCH",
+      body: JSON.stringify(visualSettingsPayload("tuning")),
+    });
+    tuningCamera = normalizeCameraSettings({ ...tuningCamera, ...updated });
+    cameras = cameras.map((camera) => (
+      camera.id === updated.id
+        ? { ...camera, ...updated, locked_by_test_id: camera.locked_by_test_id, locked_by_test_name: camera.locked_by_test_name }
+        : camera
+    ));
+  }
+
+  async function stopFieldCamera(cameraId = fieldCameraId) {
+    if (cameraId) {
+      const numericCameraId = Number(cameraId);
+      await api(`/field-tests/cameras/${numericCameraId}`, { method: "DELETE" }).catch(() => null);
+      fieldCameraIds = fieldCameraIds.filter((id) => id !== numericCameraId);
+      stopLive(numericCameraId);
+      notify("IA detenida para esta camara");
+    }
+    if (!fieldCameraIds.length || Number(cameraId) === Number(fieldCameraId)) {
+      stopFieldPolling();
+    }
+  }
+
+  function isFieldCameraActive(cameraId) {
+    return fieldCameraIds.includes(Number(cameraId));
   }
 
   function startFieldPolling() {
@@ -933,17 +1118,169 @@
     return `${protocol}${host}/ws/cameras/${cameraId}/stream?mode=viewer&token=${encodeURIComponent(token)}`;
   }
 
-  function startLive(camera) {
-    stopLive(camera.id);
-    const socket = new WebSocket(streamUrl(camera.id));
-    socket.binaryType = "blob";
-    socket.onmessage = (event) => {
-      const previousUrl = liveFrameUrls[camera.id];
-      const nextUrl = URL.createObjectURL(event.data);
-      liveFrameUrls = { ...liveFrameUrls, [camera.id]: nextUrl };
-      if (previousUrl) URL.revokeObjectURL(previousUrl);
+  function mjpegUrl(cameraId) {
+    return `${API_URL}/cameras/${cameraId}/mjpeg?token=${encodeURIComponent(token)}&ts=${Date.now()}`;
+  }
+
+  function liveMimeType() {
+    const candidates = [
+      'video/mp4; codecs="avc1.42C01F"',
+      'video/mp4; codecs="avc1.42C01E"',
+      'video/mp4; codecs="avc1.42E01F"',
+      'video/mp4; codecs="avc1.42E01E"',
+      'video/mp4; codecs="avc1.42001F"',
+    ];
+    return candidates.find((candidate) => window.MediaSource?.isTypeSupported(candidate)) || "";
+  }
+
+  function isMp4InitSegment(bytes) {
+    if (bytes.length < 8) return false;
+    const marker = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
+    return marker === "ftyp";
+  }
+
+  function registerLiveVideo(node, cameraId) {
+    liveVideoElements[cameraId] = node;
+    const stream = liveStreams[cameraId];
+    if (stream?.objectUrl) {
+      node.src = stream.objectUrl;
+      syncLivePlayback(node);
+    }
+    const markPlaying = () => {
+      const activeStream = liveStreams[cameraId];
+      if (activeStream) {
+        activeStream.videoPlaying = true;
+        if (activeStream.playbackWatchdog) clearTimeout(activeStream.playbackWatchdog);
+        activeStream.playbackWatchdog = null;
+      }
+      const nextFallbacks = { ...liveFallbackUrls };
+      delete nextFallbacks[cameraId];
+      liveFallbackUrls = nextFallbacks;
     };
-    socket.onopen = () => notify("Stream del worker conectado");
+    node.addEventListener("loadeddata", markPlaying);
+    node.addEventListener("playing", markPlaying);
+    return {
+      destroy() {
+        node.removeEventListener("loadeddata", markPlaying);
+        node.removeEventListener("playing", markPlaying);
+        if (liveVideoElements[cameraId] === node) delete liveVideoElements[cameraId];
+      },
+    };
+  }
+
+  function attachLiveMediaSource(cameraId, stream) {
+    const objectUrl = URL.createObjectURL(stream.mediaSource);
+    stream.objectUrl = objectUrl;
+    liveVideoUrls = { ...liveVideoUrls, [cameraId]: objectUrl };
+
+    const video = liveVideoElements[cameraId];
+    if (video) {
+      video.src = objectUrl;
+      syncLivePlayback(video);
+    }
+
+    stream.mediaSource.addEventListener("sourceopen", () => {
+      try {
+        stream.sourceBuffer = stream.mediaSource.addSourceBuffer(stream.mimeType);
+        stream.sourceBuffer.mode = "segments";
+        stream.sourceBuffer.addEventListener("updateend", () => flushLiveQueue(cameraId));
+        flushLiveQueue(cameraId);
+      } catch (error) {
+        notify(error.message || "No se pudo iniciar el video en vivo");
+      }
+    });
+  }
+
+  function resetLiveMediaSource(cameraId, initSegment) {
+    const stream = liveStreams[cameraId];
+    if (!stream) return;
+    const previousUrl = stream.objectUrl;
+    const video = liveVideoElements[cameraId];
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    }
+    if (stream.mediaSource?.readyState === "open") {
+      try {
+        stream.mediaSource.endOfStream();
+      } catch {
+        // The previous media source may already be closing.
+      }
+    }
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    stream.mediaSource = new MediaSource();
+    stream.sourceBuffer = null;
+    stream.queue = [initSegment];
+    stream.receivedInit = true;
+    attachLiveMediaSource(cameraId, stream);
+  }
+
+  function syncLivePlayback(video) {
+    const playAtLiveEdge = () => {
+      try {
+        if (video.buffered.length) {
+          const end = video.buffered.end(video.buffered.length - 1);
+          const start = video.buffered.start(video.buffered.length - 1);
+          if (end - video.currentTime > 2 || video.currentTime < start) {
+            video.currentTime = Math.max(start, end - 0.25);
+          }
+        }
+        video.play().catch(() => null);
+      } catch {
+        video.play().catch(() => null);
+      }
+    };
+    video.addEventListener("loadedmetadata", playAtLiveEdge, { once: true });
+    video.addEventListener("canplay", playAtLiveEdge, { once: true });
+    setTimeout(playAtLiveEdge, 0);
+  }
+
+  function startLive(camera, resetAttempts = true) {
+    stopLive(camera.id);
+    if (resetAttempts) {
+      liveRestartAttempts = { ...liveRestartAttempts, [camera.id]: 0 };
+    }
+    const mimeType = liveMimeType();
+    if (!mimeType) {
+      notify("Este navegador no soporta video MP4 en vivo por MediaSource");
+      return;
+    }
+
+    const mediaSource = new MediaSource();
+    const stream = {
+      mediaSource,
+      sourceBuffer: null,
+      queue: [],
+      objectUrl: "",
+      mimeType,
+      receivedInit: false,
+      firstMediaReceived: false,
+      videoPlaying: false,
+      watchdog: null,
+      playbackWatchdog: null,
+    };
+    liveStreams = { ...liveStreams, [camera.id]: stream };
+    attachLiveMediaSource(camera.id, stream);
+    stream.watchdog = setTimeout(() => {
+      const activeStream = liveStreams[camera.id];
+      if (activeStream && !activeStream.firstMediaReceived) {
+        restartLive(camera.id, "El vivo no recibio fragmentos de video");
+      }
+    }, 4500);
+    stream.playbackWatchdog = setTimeout(() => {
+      const activeStream = liveStreams[camera.id];
+      if (activeStream && activeStream.firstMediaReceived && !activeStream.videoPlaying) {
+        activateLiveFallback(camera.id);
+      }
+    }, 6500);
+
+    const socket = new WebSocket(streamUrl(camera.id));
+    socket.binaryType = "arraybuffer";
+    socket.onmessage = (event) => {
+      enqueueLiveChunk(camera.id, event.data);
+    };
+    socket.onopen = () => notify("Video en vivo conectado");
     socket.onerror = () => notify("No se pudo conectar el stream del worker");
     socket.onclose = () => {
       const nextSockets = { ...liveSockets };
@@ -951,6 +1288,54 @@
       liveSockets = nextSockets;
     };
     liveSockets = { ...liveSockets, [camera.id]: socket };
+  }
+
+  function enqueueLiveChunk(cameraId, data) {
+    const stream = liveStreams[cameraId];
+    if (!stream) return;
+    const bytes = new Uint8Array(data);
+    if (isMp4InitSegment(bytes)) {
+      if (stream.receivedInit) {
+        resetLiveMediaSource(cameraId, bytes);
+        return;
+      }
+      stream.receivedInit = true;
+    } else {
+      stream.firstMediaReceived = true;
+      if (stream.watchdog) clearTimeout(stream.watchdog);
+      stream.watchdog = null;
+    }
+    stream.queue.push(bytes);
+    if (stream.queue.length > 120) stream.queue.splice(0, stream.queue.length - 120);
+    flushLiveQueue(cameraId);
+  }
+
+  function flushLiveQueue(cameraId) {
+    const stream = liveStreams[cameraId];
+    if (!stream?.sourceBuffer || stream.sourceBuffer.updating || stream.mediaSource.readyState !== "open") return;
+    const chunk = stream.queue.shift();
+    if (!chunk) return;
+    try {
+      stream.sourceBuffer.appendBuffer(chunk);
+    } catch (error) {
+      stream.queue = [];
+      restartLive(cameraId, error.message || "No se pudo decodificar el vivo");
+    }
+  }
+
+  function restartLive(cameraId, reason) {
+    const camera = cameras.find((item) => item.id === Number(cameraId));
+    const attempts = liveRestartAttempts[cameraId] || 0;
+    if (!camera || !liveStreams[cameraId] || attempts >= 2) {
+      if (reason) notify(reason);
+      return;
+    }
+    liveRestartAttempts = { ...liveRestartAttempts, [cameraId]: attempts + 1 };
+    setTimeout(() => startLive(camera, false), 500);
+  }
+
+  function activateLiveFallback(cameraId) {
+    liveFallbackUrls = { ...liveFallbackUrls, [cameraId]: mjpegUrl(cameraId) };
   }
 
   function stopLive(cameraId) {
@@ -961,12 +1346,33 @@
       delete nextSockets[cameraId];
       liveSockets = nextSockets;
     }
-    const frameUrl = liveFrameUrls[cameraId];
-    if (frameUrl) {
-      URL.revokeObjectURL(frameUrl);
-      const nextFrames = { ...liveFrameUrls };
-      delete nextFrames[cameraId];
-      liveFrameUrls = nextFrames;
+    const stream = liveStreams[cameraId];
+    if (stream) {
+      if (stream.watchdog) clearTimeout(stream.watchdog);
+      if (stream.playbackWatchdog) clearTimeout(stream.playbackWatchdog);
+      const video = liveVideoElements[cameraId];
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      }
+      if (stream.mediaSource.readyState === "open") {
+        try {
+          stream.mediaSource.endOfStream();
+        } catch {
+          // The stream may already be closing.
+        }
+      }
+      URL.revokeObjectURL(stream.objectUrl);
+      const nextStreams = { ...liveStreams };
+      delete nextStreams[cameraId];
+      liveStreams = nextStreams;
+      const nextUrls = { ...liveVideoUrls };
+      delete nextUrls[cameraId];
+      liveVideoUrls = nextUrls;
+      const nextFallbacks = { ...liveFallbackUrls };
+      delete nextFallbacks[cameraId];
+      liveFallbackUrls = nextFallbacks;
     }
   }
 
@@ -1243,6 +1649,7 @@
   }
 
   function logout() {
+    closeLiveTuning(false);
     stopFieldPolling();
     if (fieldCameraId) api(`/field-tests/cameras/${fieldCameraId}`, { method: "DELETE" }).catch(() => null);
     stopAllLive();
@@ -1252,6 +1659,7 @@
   }
 
   onDestroy(() => {
+    closeLiveTuning(false);
     stopFieldPolling();
     if (fieldCameraId) api(`/field-tests/cameras/${fieldCameraId}`, { method: "DELETE" }).catch(() => null);
     stopAllLive();
@@ -1293,7 +1701,7 @@
     <section class="workspace">
       <nav class="tabs" aria-label="Secciones">
         {#each visibleViews as view}
-          <button type="button" class:active={activeView === view.id} on:click={() => (activeView = view.id)}>{view.label}</button>
+          <button type="button" class:active={activeView === view.id} on:click={() => changeView(view.id)}>{view.label}</button>
         {/each}
       </nav>
 
@@ -1317,8 +1725,10 @@
               {#each cameras as camera}
                 <article class="camera-tile">
                   <div class="thumb-wrap">
-                    {#if liveFrameUrls[camera.id]}
-                      <img src={liveFrameUrls[camera.id]} alt={`Stream ${camera.name}`} />
+                    {#if liveFallbackUrls[camera.id] && tuningCamera?.id !== camera.id}
+                      <img src={liveFallbackUrls[camera.id]} alt={`${camera.name} en vivo`} />
+                    {:else if liveVisibleOutsideTuning(camera.id)}
+                      <video use:registerLiveVideo={camera.id} muted playsinline autoplay></video>
                     {:else}
                       <img src={snapshotUrl(camera)} alt={camera.name} on:error={(event) => (event.currentTarget.style.display = "none")} />
                     {/if}
@@ -1339,11 +1749,20 @@
                       {#if liveSockets[camera.id]}
                         <button type="button" class="secondary" on:click={() => stopLive(camera.id)}>Detener vivo</button>
                       {:else}
-                        <button type="button" on:click={() => startLive(camera)}>Ver en vivo</button>
+                        <button type="button" on:click={() => startCameraFromViewer(camera).catch((error) => notify(error.message))}>
+                          {canLabel && !isFieldCameraActive(camera.id) ? "Activar vivo" : "Ver en vivo"}
+                        </button>
                       {/if}
                       {#if canLabel}
-                        <button type="button" class="secondary" on:click={() => openFieldTest(camera)}>Probar IA</button>
+                        {#if isFieldCameraActive(camera.id)}
+                          <button type="button" class="secondary" on:click={() => stopFieldCamera(camera.id)}>Detener IA</button>
+                        {:else}
+                          <button type="button" class="secondary" on:click={() => startFieldCamera(camera).catch((error) => notify(error.message))}>Activar IA</button>
+                        {/if}
                         <button type="button" on:click={() => openEditor(camera.id)}>Editar video</button>
+                      {/if}
+                      {#if canConfigure}
+                        <button type="button" class="secondary" on:click={() => openLiveTuning(camera).catch((error) => notify(error.message))}>Ajustar vivo</button>
                       {/if}
                     </div>
                   </div>
@@ -1612,8 +2031,10 @@
 
             {#if fieldCamera}
               <div class="field-stage">
-                {#if liveFrameUrls[fieldCamera.id]}
-                  <img src={liveFrameUrls[fieldCamera.id]} alt={`Vivo ${fieldCamera.name}`} />
+                {#if liveFallbackUrls[fieldCamera.id] && tuningCamera?.id !== fieldCamera.id}
+                  <img src={liveFallbackUrls[fieldCamera.id]} alt={`${fieldCamera.name} en vivo`} />
+                {:else if liveVisibleOutsideTuning(fieldCamera.id)}
+                  <video use:registerLiveVideo={fieldCamera.id} muted playsinline autoplay></video>
                 {:else}
                   <img src={snapshotUrl(fieldCamera)} alt={fieldCamera.name} />
                 {/if}
@@ -1938,6 +2359,24 @@
             <form class="camera-form" on:submit|preventDefault={addCamera}>
               <input bind:value={cameraName} placeholder="cam_01" aria-label="Nombre de camara" />
               <input bind:value={cameraSource} placeholder="rtsp://... o 0" aria-label="Fuente" />
+              <input bind:value={cameraFps} type="number" min="1" max="60" step="1" placeholder="FPS 5" aria-label="FPS de captura" />
+              <select bind:value={cameraRotation} aria-label="Rotacion de imagen">
+                <option value={0}>Rotacion 0 grados</option>
+                <option value={90}>Rotacion 90 grados</option>
+                <option value={180}>Rotacion 180 grados</option>
+                <option value={270}>Rotacion 270 grados</option>
+              </select>
+              <label class="check-row">
+                <input bind:checked={cameraFlipHorizontal} type="checkbox" />
+                Espejo horizontal
+              </label>
+              <label class="check-row">
+                <input bind:checked={cameraFlipVertical} type="checkbox" />
+                Espejo vertical
+              </label>
+              <input bind:value={cameraBrightness} type="number" min="-100" max="100" step="1" placeholder="Brillo 0" aria-label="Brillo digital" />
+              <input bind:value={cameraContrast} type="number" min="0.1" max="3" step="0.05" placeholder="Contraste 1" aria-label="Contraste digital" />
+              <input bind:value={cameraGamma} type="number" min="0.2" max="3" step="0.05" placeholder="Gamma 1" aria-label="Gamma digital" />
               <input bind:value={cameraRoiX} type="number" min="0" max="1" step="0.01" placeholder="ROI x 0.10" aria-label="ROI x" />
               <input bind:value={cameraRoiY} type="number" min="0" max="1" step="0.01" placeholder="ROI y 0.15" aria-label="ROI y" />
               <input bind:value={cameraRoiWidth} type="number" min="0.01" max="1" step="0.01" placeholder="ROI ancho 0.80" aria-label="ROI ancho" />
@@ -1957,6 +2396,24 @@
                     <form class="camera-edit-form" on:submit|preventDefault={() => updateCamera(camera.id)}>
                       <input bind:value={editCameraName} aria-label="Nombre de camara" />
                       <input bind:value={editCameraSource} aria-label="Fuente de camara" />
+                      <input bind:value={editCameraFps} type="number" min="1" max="60" step="1" placeholder="FPS" aria-label="FPS de captura" />
+                      <select bind:value={editCameraRotation} aria-label="Rotacion de imagen">
+                        <option value={0}>Rotacion 0 grados</option>
+                        <option value={90}>Rotacion 90 grados</option>
+                        <option value={180}>Rotacion 180 grados</option>
+                        <option value={270}>Rotacion 270 grados</option>
+                      </select>
+                      <label class="check-row">
+                        <input bind:checked={editCameraFlipHorizontal} type="checkbox" />
+                        Espejo horizontal
+                      </label>
+                      <label class="check-row">
+                        <input bind:checked={editCameraFlipVertical} type="checkbox" />
+                        Espejo vertical
+                      </label>
+                      <input bind:value={editCameraBrightness} type="number" min="-100" max="100" step="1" placeholder="Brillo" aria-label="Brillo digital" />
+                      <input bind:value={editCameraContrast} type="number" min="0.1" max="3" step="0.05" placeholder="Contraste" aria-label="Contraste digital" />
+                      <input bind:value={editCameraGamma} type="number" min="0.2" max="3" step="0.05" placeholder="Gamma" aria-label="Gamma digital" />
                       <input bind:value={editCameraRoiX} type="number" min="0" max="1" step="0.01" placeholder="ROI x" aria-label="ROI x" />
                       <input bind:value={editCameraRoiY} type="number" min="0" max="1" step="0.01" placeholder="ROI y" aria-label="ROI y" />
                       <input bind:value={editCameraRoiWidth} type="number" min="0.01" max="1" step="0.01" placeholder="ROI ancho" aria-label="ROI ancho" />
@@ -1973,6 +2430,8 @@
                       <div>
                         <strong>{camera.name}</strong>
                         <p>{camera.source}</p>
+                        <p>Captura: {camera.capture_fps || 5} FPS</p>
+                        <p>{visualSettingsSummary(camera)}</p>
                         {#if camera.roi_width && camera.roi_height}
                           <p>ROI pantalla: x {camera.roi_x}, y {camera.roi_y}, ancho {camera.roi_width}, alto {camera.roi_height}</p>
                         {:else}
@@ -1986,6 +2445,7 @@
                       {#if canConfigure}
                         <div class="row-actions">
                           <button type="button" class="secondary" on:click={() => startRoiCalibration(camera)}>Recalibrar ROI</button>
+                          <button type="button" class="secondary" on:click={() => openLiveTuning(camera).catch((error) => notify(error.message))}>Ajustar vivo</button>
                           {#if camera.locked_by_test_id}
                             <button type="button" class="secondary" disabled>Bloqueada</button>
                           {:else}
@@ -2066,6 +2526,64 @@
 
   {#if toastMessage}
     <div class="toast">{toastMessage}</div>
+  {/if}
+
+  {#if tuningCamera}
+    <div class="modal-backdrop">
+      <section class="roi-modal live-tuning-modal">
+        <div class="panel-head">
+          <div>
+            <h2>Ajustar vivo</h2>
+            <p>{tuningCamera.name} - los cambios se guardan mientras ves la imagen.</p>
+          </div>
+          <button type="button" class="secondary" on:click={() => closeLiveTuning()}>Cerrar</button>
+        </div>
+
+        <div class="field-stage">
+          {#if liveFallbackUrls[tuningCamera.id]}
+            <img src={liveFallbackUrls[tuningCamera.id]} alt={`${tuningCamera.name} en vivo`} />
+          {:else if liveVideoUrls[tuningCamera.id]}
+            <video use:registerLiveVideo={tuningCamera.id} muted playsinline autoplay></video>
+          {:else}
+            <img src={snapshotUrl(tuningCamera)} alt={tuningCamera.name} />
+          {/if}
+        </div>
+
+        <div class="camera-tuning-grid">
+          <label>
+            Rotacion
+            <select bind:value={tuningCamera.rotation_degrees} on:change={scheduleLiveTuningSave}>
+              <option value={0}>0 grados</option>
+              <option value={90}>90 grados</option>
+              <option value={180}>180 grados</option>
+              <option value={270}>270 grados</option>
+            </select>
+          </label>
+          <label class="check-row">
+            <input bind:checked={tuningCamera.flip_horizontal} type="checkbox" on:change={scheduleLiveTuningSave} />
+            Espejo horizontal
+          </label>
+          <label class="check-row">
+            <input bind:checked={tuningCamera.flip_vertical} type="checkbox" on:change={scheduleLiveTuningSave} />
+            Espejo vertical
+          </label>
+          <label>
+            Brillo
+            <input bind:value={tuningCamera.digital_brightness} type="number" min="-100" max="100" step="1" on:input={scheduleLiveTuningSave} />
+          </label>
+          <label>
+            Contraste
+            <input bind:value={tuningCamera.digital_contrast} type="number" min="0.1" max="3" step="0.05" on:input={scheduleLiveTuningSave} />
+          </label>
+          <label>
+            Gamma
+            <input bind:value={tuningCamera.digital_gamma} type="number" min="0.2" max="3" step="0.05" on:input={scheduleLiveTuningSave} />
+          </label>
+        </div>
+
+        <p class="hint">El worker refresca estos ajustes cada segundo y los aplica antes de enviar vivo, detectar ROI y grabar chunks.</p>
+      </section>
+    </div>
   {/if}
 
   {#if roiCamera}

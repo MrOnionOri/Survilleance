@@ -69,10 +69,19 @@ El worker requiere Python 3.10 o superior. Si tu `python3` apunta a una version 
 PYTHON_BIN=/opt/homebrew/bin/python3.12 ./scripts/setup-local-worker-macos.sh
 ```
 
-Terminal 2: detectar indices de camaras locales:
+Terminal 2: ejecutar el worker local:
 
 ```bash
-./scripts/probe-local-cameras-macos.sh 8
+./scripts/run-local-worker-macos.sh
+```
+
+Al arrancar, el worker escanea las camaras locales e imprime un resumen con el valor exacto que debes poner en **Fuentes > Agregar camara > Fuente**. Ejemplo:
+
+```text
+Resumen de camaras locales
+--------------------------
+- Camara indice 0: en el dashboard coloca Fuente = 0
+- Camara indice 1: en el dashboard coloca Fuente = 1
 ```
 
 El probe guarda snapshots en:
@@ -90,13 +99,21 @@ Camara USB HUB 1 -> 1
 Camara USB HUB 2 -> 2
 ```
 
-Luego ejecuta el worker local:
+Si quieres repetir solo el escaneo sin iniciar el worker completo:
 
 ```bash
-./scripts/run-local-worker-macos.sh
+./scripts/probe-local-cameras-macos.sh 8
 ```
 
 Si macOS no entrega frames, revisa permisos en **System Settings > Privacy & Security > Camera** y habilita la app desde donde ejecutas el worker, por ejemplo Terminal, iTerm o VS Code. Despues cierra y vuelve a abrir esa terminal.
+
+Para grabar chunks MP4, el worker necesita FFmpeg. En macOS instalalo con:
+
+```bash
+brew install ffmpeg
+```
+
+El script `run-local-worker-macos.sh` usa automaticamente el `ffmpeg` disponible en tu `PATH`. Si no lo encuentra, el vivo y las detecciones siguen funcionando, pero la grabacion se desactiva para no tumbar el proceso de la camara.
 
 Notas para HUB USB en macOS:
 
@@ -217,15 +234,23 @@ Si una camara se mueve durante una prueba, se puede recalibrar la ROI sin desblo
 
 Las categorias de sucesos son editables desde **Sistema > Categorias IA**. Las categorias creadas ahi aparecen en el editor y en eventos para etiquetar rangos de video y alimentar el entrenamiento. La gestion de usuarios vive en la seccion **Usuarios**.
 
+El FPS de captura se configura por camara desde **Fuentes** y solo puede modificarlo un administrador. El valor se guarda en base de datos como `capture_fps`; el worker usa ese valor para leer frames, enviar vivo, detectar eventos y grabar chunks de esa camara. Si cambias el FPS mientras una camara esta en una prueba o campo de pruebas, el worker reinicia solo el proceso de esa camara para aplicar el ajuste.
+
+Los ajustes visuales de cada camara tambien se guardan en base de datos y solo los modifica un administrador: rotacion, espejo horizontal/vertical, brillo, contraste y gamma. Desde **Camaras > Ajustar vivo** o **Fuentes > Ajustar vivo** puedes mover esos valores viendo el stream en directo; el worker refresca la configuracion cada segundo y aplica los cambios antes de enviar vivo, detectar ROI y grabar chunks.
+
+Para grabacion MP4, el worker mantiene la duracion en tiempo real: si una camara entrega menos frames que el FPS configurado, repite el frame mas reciente para que un chunk de 5 segundos se reproduzca como 5 segundos y no acelerado.
+
 ## Video en vivo
 
-El vivo del mosaico no abre la camara desde Chrome. El worker captura la camara una sola vez y manda frames JPEG al backend por WebSocket:
+El vivo del mosaico no abre la camara desde Chrome. El worker captura la camara una sola vez, codifica video fragmentado MP4 con FFmpeg y lo manda al backend por WebSocket:
 
 ```text
 worker -> ws://backend/ws/cameras/<id>/stream -> frontend
 ```
 
 Esto evita conflictos como `Device in use`, porque Chrome ya no compite por la webcam. El boton **Ver en vivo** del mosaico se conecta al stream del worker.
+
+El vivo usa video fragmentado MP4 por WebSocket, no imagenes JPEG sueltas. El worker codifica con FFmpeg y envia fragmentos fMP4; el frontend los reproduce con `MediaSource` dentro de un elemento `<video>`. Para limitar CPU y red, el vivo usa como maximo `VIDEO_STREAM_MAX_FPS`, aunque la camara capture o grabe a mas FPS.
 
 ## Permisos en frontend
 
@@ -321,6 +346,12 @@ Stream online -> http://servidor/video.mp4
 | `ADMIN_EMAIL` | Usuario inicial | `admin@streamwatch.local` |
 | `ADMIN_PASSWORD` | Password inicial | `admin123` |
 | `STREAMWATCH_DATA_DIR` | Directorio de evidencia | `./data` |
+| `CAPTURE_FPS` | FPS global usado como fallback si una camara no tiene `capture_fps` | `5` |
+| `VIDEO_STREAM_MAX_FPS` | FPS maximo del video en vivo por WebSocket | `15` |
+| `VIDEO_STREAM_MAX_WIDTH` | Ancho maximo del video en vivo; grabacion, snapshots e IA conservan el frame completo | `960` |
+| `VIDEO_STREAM_JPEG_FPS` | FPS del fallback MJPEG si Chrome no logra pintar el MP4 en vivo | `5` |
+| `CAMERA_SETTINGS_POLL_SECONDS` | Frecuencia con la que el worker refresca ROI y ajustes visuales de camara | `1` |
+| `EVENT_COOLDOWN_SECONDS` | Segundos minimos entre eventos del mismo tipo por camara en el worker | `10` |
 
 ## Roadmap implementado
 

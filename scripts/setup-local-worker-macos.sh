@@ -25,6 +25,10 @@ echo "Instalando dependencias del worker para macOS..."
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 "$VENV_DIR/bin/python" -m pip install -r "$WORKER_DIR/requirements-macos.txt"
 
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "Aviso: no encontre ffmpeg. Para grabar chunks MP4 instala ffmpeg con: brew install ffmpeg"
+fi
+
 echo "Worker local para macOS listo."
 echo "Para probar camaras: ./scripts/probe-local-cameras-macos.sh"
 echo "Para ejecutarlo: ./scripts/run-local-worker-macos.sh"

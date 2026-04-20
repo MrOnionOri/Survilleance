@@ -1,10 +1,12 @@
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
-from time import sleep
+from time import monotonic, sleep
 
 import cv2
 import imageio_ffmpeg
@@ -50,6 +52,16 @@ def save_frame(frame: np.ndarray, path: Path) -> None:
     cv2.imwrite(str(path), frame)
 
 
+def ffmpeg_exe() -> str | None:
+    configured = os.getenv("IMAGEIO_FFMPEG_EXE")
+    if configured and Path(configured).exists():
+        return configured
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except RuntimeError:
+        return shutil.which("ffmpeg")
+
+
 class ChunkRecorder:
     def __init__(self, root: Path, camera_id: int, fps: int = 5, chunk_seconds: int = 60, test_id: int | None = None) -> None:
         self.root = root
@@ -60,9 +72,11 @@ class ChunkRecorder:
         self.process: subprocess.Popen | None = None
         self.started_at: datetime | None = None
         self.frame_size: tuple[int, int] | None = None
+        self.next_frame_at: float | None = None
 
     def write(self, frame: np.ndarray) -> Path:
         now = datetime.utcnow()
+        now_monotonic = monotonic()
         height, width = frame.shape[:2]
         frame_size = (width, height)
         should_rotate = (
@@ -76,7 +90,8 @@ class ChunkRecorder:
             self._rotate(frame, now)
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("FFmpeg writer could not be initialized")
-        self.process.stdin.write(frame.tobytes())
+        for _ in range(self._frames_due(now_monotonic)):
+            self.process.stdin.write(frame.tobytes())
         return self._path_for(self.started_at or now)
 
     def close(self) -> None:
@@ -92,7 +107,11 @@ class ChunkRecorder:
         path.parent.mkdir(parents=True, exist_ok=True)
         height, width = frame.shape[:2]
         self.frame_size = (width, height)
-        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg = ffmpeg_exe()
+        if not ffmpeg:
+            raise RuntimeError(
+                "No ffmpeg executable found. Install ffmpeg or set IMAGEIO_FFMPEG_EXE to its path."
+            )
         command = [
             ffmpeg,
             "-y",
@@ -119,6 +138,22 @@ class ChunkRecorder:
         ]
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.started_at = started_at
+        self.next_frame_at = None
+
+    def _frames_due(self, now: float) -> int:
+        frame_interval = 1 / max(self.fps, 1)
+        if self.next_frame_at is None:
+            self.next_frame_at = now + frame_interval
+            return 1
+
+        frames = 0
+        max_frames = max(1, self.fps * 2)
+        while self.next_frame_at <= now and frames < max_frames:
+            frames += 1
+            self.next_frame_at += frame_interval
+        if frames == max_frames and self.next_frame_at < now:
+            self.next_frame_at = now + frame_interval
+        return frames
 
     def _path_for(self, started_at: datetime) -> Path:
         date_dir = started_at.strftime("%Y-%m-%d")
@@ -136,6 +171,7 @@ def reconnecting_frames(source: str, fps: int = 5):
             sleep(3)
             continue
 
+        next_frame_at = monotonic()
         while True:
             ok, frame = capture.read()
             if not ok:
@@ -143,4 +179,9 @@ def reconnecting_frames(source: str, fps: int = 5):
                 sleep(3)
                 break
             yield frame
-            sleep(delay)
+            next_frame_at += delay
+            sleep_for = next_frame_at - monotonic()
+            if sleep_for > 0:
+                sleep(sleep_for)
+            elif sleep_for < -delay:
+                next_frame_at = monotonic()
