@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     admin_email: str = "admin@streamwatch.example.com"
     admin_password: str = "admin123"
     streamwatch_data_dir: Path = Path("./data")
+    training_max_epochs: int = 50
+    training_image_size: int = 128
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

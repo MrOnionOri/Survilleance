@@ -2,7 +2,7 @@ import json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from multiprocessing import Process
 from pathlib import Path
 from time import monotonic, sleep
@@ -102,6 +102,21 @@ def post_event(access_token: str, payload: dict) -> bool:
 def ws_url(access_token: str, camera_id: int, mode: str = "producer") -> str:
     base = BACKEND_URL.replace("https://", "wss://").replace("http://", "ws://")
     return f"{base}/ws/cameras/{camera_id}/stream?mode={mode}&token={access_token}"
+
+
+def test_is_running(test: dict) -> bool:
+    if test.get("status") != "running":
+        return False
+    ends_at = test.get("ends_at")
+    if not ends_at:
+        return True
+    try:
+        parsed = datetime.fromisoformat(str(ends_at).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed > datetime.now(timezone.utc)
+    except ValueError:
+        return True
 
 
 VIDEO_STREAM_MAX_FPS = int(os.getenv("VIDEO_STREAM_MAX_FPS", "15"))
@@ -426,7 +441,7 @@ def main() -> None:
     while True:
         try:
             access_token = token()
-            running_tests = [test for test in tests(access_token) if test.get("status") == "running"]
+            running_tests = [test for test in tests(access_token) if test_is_running(test)]
             running_camera_ids = {camera_id for test in running_tests for camera_id in test.get("camera_ids", [])}
             field_camera_ids = field_test_camera_ids(access_token)
             process_camera_ids = running_camera_ids | field_camera_ids

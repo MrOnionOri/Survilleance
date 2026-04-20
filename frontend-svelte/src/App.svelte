@@ -8,6 +8,7 @@
   let user = null;
   let cameras = [];
   let categories = [];
+  let users = [];
   let events = [];
   let recordings = [];
   let recordingStatuses = [];
@@ -57,6 +58,8 @@
   let categoryName = "";
   let categoryDescription = "";
   let categoryCritical = false;
+  let categoryActive = true;
+  let editingCategoryId = null;
   let trainPurpose = "event_classifier";
   let trainEpochs = 10;
   let trainDatasetId = "";
@@ -91,6 +94,18 @@
   let newUserEmail = "";
   let newUserPassword = "";
   let newUserRole = "viewer";
+  let newUserActive = true;
+  let newUserMustChangePassword = true;
+  let editingUserId = null;
+  let editUserRole = "viewer";
+  let editUserActive = true;
+  let editUserMustChangePassword = false;
+  let resetPasswordUserId = null;
+  let resetPasswordValue = "";
+  let resetPasswordMustChange = true;
+  let currentPassword = "";
+  let nextPassword = "";
+  let confirmNextPassword = "";
   let testName = "";
   let testDescription = "";
   let testDurationMinutes = 240;
@@ -110,6 +125,7 @@
   let liveVideoUrls = {};
   let liveFallbackUrls = {};
   let liveRestartAttempts = {};
+  let liveSessionIds = {};
   let roiCamera = null;
   let tuningCamera = null;
   let tuningSaveTimer = null;
@@ -135,7 +151,7 @@
   $: totalDuration = recordings.reduce((sum, chunk) => sum + chunk.duration_seconds, 0);
   $: criticalCount = events.filter((event) => isCritical(event.type)).length;
   $: selected = selectedTimes();
-  $: eventTypes = categories.length ? categories.map((category) => category.key) : defaultEventTypes;
+  $: eventTypes = categories.length ? categories.filter((category) => category.active !== false).map((category) => category.key) : defaultEventTypes;
   $: {
     datasetSearch;
     datasetFilter;
@@ -193,11 +209,25 @@
 
   async function hydrate() {
     user = await api("/auth/me");
+    if (user.must_change_password) {
+      cameras = [];
+      categories = [];
+      events = [];
+      recordingStatuses = [];
+      tests = [];
+      datasets = [];
+      models = [];
+      users = [];
+      return;
+    }
     cameras = await api(`/cameras${user?.role === "admin" ? "?include_disabled=true" : ""}`);
-    categories = await api("/categories");
+    categories = await api("/categories?include_disabled=true");
     events = await api(`/events${eventFilter ? `?type=${eventFilter}` : ""}`);
     recordingStatuses = await api("/recordings/status");
     tests = await api("/tests");
+    if (user?.role === "admin") {
+      users = await api("/users");
+    }
     if (["admin", "supervisor", "analyst"].includes(user?.role)) {
       datasetStats = await api("/dataset/stats");
       datasets = await api("/datasets");
@@ -366,6 +396,16 @@
 
   function liveVisibleOutsideTuning(cameraId) {
     return liveVideoUrls[cameraId] && tuningCamera?.id !== cameraId;
+  }
+
+  function nextLiveSession(cameraId) {
+    const nextSessionId = (liveSessionIds[cameraId] || 0) + 1;
+    liveSessionIds = { ...liveSessionIds, [cameraId]: nextSessionId };
+    return nextSessionId;
+  }
+
+  function isCurrentLiveSession(cameraId, sessionId) {
+    return liveSessionIds[cameraId] === sessionId && liveStreams[cameraId]?.sessionId === sessionId;
   }
 
   function changeView(viewId) {
@@ -642,12 +682,103 @@
     try {
       await api("/auth/register", {
         method: "POST",
-        body: JSON.stringify({ email: newUserEmail, password: newUserPassword, role: newUserRole }),
+        body: JSON.stringify({
+          email: newUserEmail,
+          password: newUserPassword,
+          role: newUserRole,
+          active: newUserActive,
+          must_change_password: newUserMustChangePassword,
+        }),
       });
       newUserEmail = "";
       newUserPassword = "";
       newUserRole = "viewer";
+      newUserActive = true;
+      newUserMustChangePassword = true;
+      await hydrate();
       notify("Usuario creado");
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  function editUser(targetUser) {
+    editingUserId = targetUser.id;
+    editUserRole = targetUser.role;
+    editUserActive = Boolean(targetUser.active);
+    editUserMustChangePassword = Boolean(targetUser.must_change_password);
+  }
+
+  function cancelUserEdit() {
+    editingUserId = null;
+    editUserRole = "viewer";
+    editUserActive = true;
+    editUserMustChangePassword = false;
+  }
+
+  async function updateUser(targetUser) {
+    if (!canConfigure) return;
+    try {
+      await api(`/users/${targetUser.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          role: editUserRole,
+          active: editUserActive,
+          must_change_password: editUserMustChangePassword,
+        }),
+      });
+      cancelUserEdit();
+      await hydrate();
+      notify("Usuario actualizado");
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  function openPasswordReset(targetUser) {
+    resetPasswordUserId = targetUser.id;
+    resetPasswordValue = "";
+    resetPasswordMustChange = true;
+  }
+
+  async function resetUserPassword() {
+    if (!canConfigure || !resetPasswordUserId) return;
+    try {
+      await api(`/users/${resetPasswordUserId}/password`, {
+        method: "POST",
+        body: JSON.stringify({
+          password: resetPasswordValue,
+          must_change_password: resetPasswordMustChange,
+        }),
+      });
+      resetPasswordUserId = null;
+      resetPasswordValue = "";
+      resetPasswordMustChange = true;
+      await hydrate();
+      notify("Password temporal asignado");
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  async function changeOwnPassword() {
+    if (nextPassword !== confirmNextPassword) {
+      notify("La confirmacion no coincide");
+      return;
+    }
+    try {
+      user = await api("/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: nextPassword,
+        }),
+      });
+      currentPassword = "";
+      nextPassword = "";
+      confirmNextPassword = "";
+      await hydrate();
+      notify("Password actualizado");
     } catch (error) {
       notify(error.message);
     }
@@ -691,24 +822,77 @@
     }
   }
 
-  async function createCategory() {
+  function resetCategoryForm() {
+    editingCategoryId = null;
+    categoryKey = "";
+    categoryName = "";
+    categoryDescription = "";
+    categoryCritical = false;
+    categoryActive = true;
+  }
+
+  function editCategory(category) {
+    editingCategoryId = category.id;
+    categoryKey = category.key;
+    categoryName = category.name;
+    categoryDescription = category.description || "";
+    categoryCritical = Boolean(category.critical);
+    categoryActive = category.active !== false;
+  }
+
+  async function saveCategory() {
     if (!canConfigure) return;
     try {
-      await api("/categories", {
-        method: "POST",
-        body: JSON.stringify({
-          key: categoryKey.trim(),
-          name: categoryName.trim(),
-          description: categoryDescription || null,
-          critical: categoryCritical,
-        }),
-      });
-      categoryKey = "";
-      categoryName = "";
-      categoryDescription = "";
-      categoryCritical = false;
+      const payload = {
+        name: categoryName.trim(),
+        description: categoryDescription || null,
+        critical: categoryCritical,
+        active: categoryActive,
+      };
+      if (editingCategoryId) {
+        await api(`/categories/${editingCategoryId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await api("/categories", {
+          method: "POST",
+          body: JSON.stringify({
+            key: categoryKey.trim(),
+            ...payload,
+          }),
+        });
+      }
+      const wasEditing = Boolean(editingCategoryId);
+      resetCategoryForm();
       await hydrate();
-      notify("Categoria creada");
+      notify(wasEditing ? "Categoria actualizada" : "Categoria creada");
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  async function disableCategory(category) {
+    if (!canConfigure) return;
+    try {
+      await api(`/categories/${category.id}`, { method: "DELETE" });
+      if (editingCategoryId === category.id) resetCategoryForm();
+      await hydrate();
+      notify("Categoria dada de baja");
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  async function reactivateCategory(category) {
+    if (!canConfigure) return;
+    try {
+      await api(`/categories/${category.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ active: true }),
+      });
+      await hydrate();
+      notify("Categoria reactivada");
     } catch (error) {
       notify(error.message);
     }
@@ -784,8 +968,7 @@
     }
   }
 
-  async function startFieldCamera(camera) {
-    const previousCameraId = Number(fieldCameraId);
+  async function startFieldCamera(camera, previousCameraId = Number(fieldCameraId)) {
     if (previousCameraId && previousCameraId !== camera.id) {
       stopLive(previousCameraId);
     }
@@ -884,9 +1067,16 @@
   }
 
   function openFieldTest(camera) {
-    fieldCameraId = String(camera.id);
+    const previousCameraId = Number(fieldCameraId);
     activeView = "field_test";
-    startFieldCamera(camera).catch((error) => notify(error.message));
+    startFieldCamera(camera, previousCameraId).catch((error) => notify(error.message));
+  }
+
+  function changeFieldCamera(event) {
+    const previousCameraId = Number(fieldCameraId);
+    const cameraId = Number(event.currentTarget.value);
+    const camera = cameras.find((item) => item.id === cameraId);
+    if (camera) startFieldCamera(camera, previousCameraId).catch((error) => notify(error.message));
   }
 
   function selectedFieldCamera() {
@@ -1238,6 +1428,7 @@
 
   function startLive(camera, resetAttempts = true) {
     stopLive(camera.id);
+    const sessionId = nextLiveSession(camera.id);
     if (resetAttempts) {
       liveRestartAttempts = { ...liveRestartAttempts, [camera.id]: 0 };
     }
@@ -1249,6 +1440,7 @@
 
     const mediaSource = new MediaSource();
     const stream = {
+      sessionId,
       mediaSource,
       sourceBuffer: null,
       queue: [],
@@ -1264,13 +1456,13 @@
     attachLiveMediaSource(camera.id, stream);
     stream.watchdog = setTimeout(() => {
       const activeStream = liveStreams[camera.id];
-      if (activeStream && !activeStream.firstMediaReceived) {
-        restartLive(camera.id, "El vivo no recibio fragmentos de video");
+      if (isCurrentLiveSession(camera.id, sessionId) && activeStream && !activeStream.firstMediaReceived) {
+        restartLive(camera.id, "El vivo no recibio fragmentos de video", sessionId);
       }
     }, 4500);
     stream.playbackWatchdog = setTimeout(() => {
       const activeStream = liveStreams[camera.id];
-      if (activeStream && activeStream.firstMediaReceived && !activeStream.videoPlaying) {
+      if (isCurrentLiveSession(camera.id, sessionId) && activeStream && activeStream.firstMediaReceived && !activeStream.videoPlaying) {
         activateLiveFallback(camera.id);
       }
     }, 6500);
@@ -1278,14 +1470,22 @@
     const socket = new WebSocket(streamUrl(camera.id));
     socket.binaryType = "arraybuffer";
     socket.onmessage = (event) => {
-      enqueueLiveChunk(camera.id, event.data);
+      if (isCurrentLiveSession(camera.id, sessionId)) {
+        enqueueLiveChunk(camera.id, event.data);
+      }
     };
-    socket.onopen = () => notify("Video en vivo conectado");
-    socket.onerror = () => notify("No se pudo conectar el stream del worker");
+    socket.onopen = () => {
+      if (isCurrentLiveSession(camera.id, sessionId)) notify("Video en vivo conectado");
+    };
+    socket.onerror = () => {
+      if (isCurrentLiveSession(camera.id, sessionId)) notify("No se pudo conectar el stream del worker");
+    };
     socket.onclose = () => {
-      const nextSockets = { ...liveSockets };
-      delete nextSockets[camera.id];
-      liveSockets = nextSockets;
+      if (liveSockets[camera.id] === socket) {
+        const nextSockets = { ...liveSockets };
+        delete nextSockets[camera.id];
+        liveSockets = nextSockets;
+      }
     };
     liveSockets = { ...liveSockets, [camera.id]: socket };
   }
@@ -1323,15 +1523,19 @@
     }
   }
 
-  function restartLive(cameraId, reason) {
+  function restartLive(cameraId, reason, sessionId = liveStreams[cameraId]?.sessionId) {
     const camera = cameras.find((item) => item.id === Number(cameraId));
     const attempts = liveRestartAttempts[cameraId] || 0;
-    if (!camera || !liveStreams[cameraId] || attempts >= 2) {
+    if (!camera || !isCurrentLiveSession(cameraId, sessionId) || attempts >= 2) {
       if (reason) notify(reason);
       return;
     }
     liveRestartAttempts = { ...liveRestartAttempts, [cameraId]: attempts + 1 };
-    setTimeout(() => startLive(camera, false), 500);
+    setTimeout(() => {
+      if (isCurrentLiveSession(cameraId, sessionId)) {
+        startLive(camera, false);
+      }
+    }, 500);
   }
 
   function activateLiveFallback(cameraId) {
@@ -1616,6 +1820,21 @@
     );
   }
 
+  function roleLabel(value) {
+    return (
+      {
+        viewer: "Viewer",
+        analyst: "Analista",
+        supervisor: "Supervisor",
+        admin: "Admin",
+      }[value] || value
+    );
+  }
+
+  function formatDateTime(value) {
+    return value ? new Date(value).toLocaleString() : "Nunca";
+  }
+
   function modelStatusLabel(model) {
     if (model.active) return "Activo";
     return model.status || "Registrado";
@@ -1655,6 +1874,7 @@
     stopAllLive();
     token = "";
     user = null;
+    users = [];
     localStorage.removeItem("streamwatch_token");
   }
 
@@ -1695,6 +1915,19 @@
         <input bind:value={email} type="email" aria-label="Email" />
         <input bind:value={password} type="password" aria-label="Password" />
         <button type="submit">Entrar</button>
+      </form>
+    </section>
+  {:else if user.must_change_password}
+    <section class="panel auth-panel">
+      <div>
+        <h2>Cambia tu password</h2>
+        <p>Tu cuenta tiene un password temporal. Actualizalo para continuar.</p>
+      </div>
+      <form class="form-row" on:submit|preventDefault={changeOwnPassword}>
+        <input bind:value={currentPassword} type="password" placeholder="Password actual" aria-label="Password actual" />
+        <input bind:value={nextPassword} type="password" placeholder="Nuevo password" aria-label="Nuevo password" />
+        <input bind:value={confirmNextPassword} type="password" placeholder="Confirmar nuevo password" aria-label="Confirmar nuevo password" />
+        <button type="submit">Actualizar password</button>
       </form>
     </section>
   {:else}
@@ -2004,7 +2237,7 @@
             <div class="field-controls">
               <label>
                 Camara
-                <select bind:value={fieldCameraId} on:change={() => { const camera = selectedFieldCamera(); if (camera) startFieldCamera(camera).catch((error) => notify(error.message)); }}>
+                <select value={fieldCameraId} on:change={changeFieldCamera}>
                   {#each cameras as camera}
                     <option value={camera.id}>{camera.name} - {camera.source}</option>
                   {/each}
@@ -2472,7 +2705,7 @@
         <section class="admin-layout">
           <div class="panel">
             <h2>Usuarios y roles</h2>
-            <p>Crea accesos con opciones visibles segun permisos.</p>
+            <p>Crea accesos, revisa sesiones y administra permisos sin borrar usuarios.</p>
             <form class="user-form" on:submit|preventDefault={createUser}>
               <input bind:value={newUserEmail} type="email" placeholder="usuario@empresa.com" aria-label="Email de usuario" />
               <input bind:value={newUserPassword} type="password" placeholder="password temporal" aria-label="Password de usuario" />
@@ -2482,9 +2715,82 @@
                 <option value="supervisor">Supervisor</option>
                 <option value="admin">Admin</option>
               </select>
+              <label class="check-row">
+                <input bind:checked={newUserActive} type="checkbox" />
+                Activo
+              </label>
+              <label class="check-row">
+                <input bind:checked={newUserMustChangePassword} type="checkbox" />
+                Forzar cambio al iniciar
+              </label>
               <button type="submit">Crear usuario</button>
             </form>
           </div>
+
+          <div class="panel wide">
+            <h2>Usuarios registrados</h2>
+            <p>La baja desactiva el acceso, pero conserva etiquetas, auditoria y eventos asociados.</p>
+            <div class="list">
+              {#each users as managedUser}
+                <article class="item model-item">
+                  <div>
+                    <strong>{managedUser.email}</strong>
+                    <p>
+                      {roleLabel(managedUser.role)} - {managedUser.session_count || 0} sesiones - Ultima sesion: {formatDateTime(managedUser.last_login_at)}
+                    </p>
+                    <p>
+                      Creado: {formatDateTime(managedUser.created_at)} - Password: {formatDateTime(managedUser.password_changed_at)}
+                    </p>
+                  </div>
+                  <div class="row-actions">
+                    <span class:warn={!managedUser.active} class="badge">{managedUser.active ? "Activo" : "Baja"}</span>
+                    <span class:critical={managedUser.must_change_password} class="badge">
+                      {managedUser.must_change_password ? "Cambio requerido" : "Password vigente"}
+                    </span>
+                    {#if editingUserId === managedUser.id}
+                      <select bind:value={editUserRole} aria-label="Rol de usuario">
+                        <option value="viewer">Viewer</option>
+                        <option value="analyst">Analista</option>
+                        <option value="supervisor">Supervisor</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                      <label class="check-row">
+                        <input bind:checked={editUserActive} type="checkbox" />
+                        Activo
+                      </label>
+                      <label class="check-row">
+                        <input bind:checked={editUserMustChangePassword} type="checkbox" />
+                        Forzar cambio
+                      </label>
+                      <button type="button" on:click={() => updateUser(managedUser)}>Guardar</button>
+                      <button type="button" class="secondary" on:click={cancelUserEdit}>Cancelar</button>
+                    {:else}
+                      <button type="button" class="secondary" on:click={() => editUser(managedUser)}>Editar</button>
+                      <button type="button" class="secondary" on:click={() => openPasswordReset(managedUser)}>Cambiar password</button>
+                    {/if}
+                  </div>
+                </article>
+              {:else}
+                <article class="item"><strong>Sin usuarios</strong><p>Aun no hay usuarios registrados.</p></article>
+              {/each}
+            </div>
+          </div>
+
+          {#if resetPasswordUserId}
+            <div class="panel">
+              <h2>Cambiar password</h2>
+              <p>Asigna un password temporal. Por seguridad, puedes forzar cambio al siguiente inicio.</p>
+              <form class="user-form" on:submit|preventDefault={resetUserPassword}>
+                <input bind:value={resetPasswordValue} type="password" placeholder="nuevo password temporal" aria-label="Nuevo password temporal" />
+                <label class="check-row">
+                  <input bind:checked={resetPasswordMustChange} type="checkbox" />
+                  Forzar cambio al iniciar
+                </label>
+                <button type="submit">Guardar password</button>
+                <button type="button" class="secondary" on:click={() => (resetPasswordUserId = null)}>Cancelar</button>
+              </form>
+            </div>
+          {/if}
         </section>
       {/if}
 
@@ -2493,20 +2799,43 @@
           {#if canConfigure}
             <div class="panel">
               <h2>Categorias IA</h2>
-              <p>Crea sucesos que luego podran usarse como etiquetas para entrenamiento.</p>
-              <form class="user-form" on:submit|preventDefault={createCategory}>
-                <input bind:value={categoryKey} placeholder="audio_desync" aria-label="Clave de categoria" />
+              <p>Crea, edita o da de baja sucesos para entrenamiento sin borrar el historial.</p>
+              <form class="user-form" on:submit|preventDefault={saveCategory}>
+                <input bind:value={categoryKey} disabled={Boolean(editingCategoryId)} placeholder="audio_desync" aria-label="Clave de categoria" />
                 <input bind:value={categoryName} placeholder="Audio desincronizado" aria-label="Nombre de categoria" />
                 <input bind:value={categoryDescription} placeholder="Descripcion" aria-label="Descripcion de categoria" />
                 <label class="check-row">
                   <input bind:checked={categoryCritical} type="checkbox" />
                   Critica
                 </label>
-                <button type="submit">Crear categoria</button>
+                <label class="check-row">
+                  <input bind:checked={categoryActive} type="checkbox" />
+                  Activa
+                </label>
+                <button type="submit">{editingCategoryId ? "Guardar categoria" : "Crear categoria"}</button>
+                {#if editingCategoryId}
+                  <button type="button" class="secondary" on:click={resetCategoryForm}>Cancelar edicion</button>
+                {/if}
               </form>
-              <div class="tag-list">
+              <div class="list">
                 {#each categories as category}
-                  <span class:critical={category.critical} class="badge">{category.name}</span>
+                  <article class="item model-item">
+                    <div>
+                      <strong>{category.name}</strong>
+                      <p>{category.key}</p>
+                      <p>{category.description || "Sin descripcion"}</p>
+                    </div>
+                    <div class="row-actions">
+                      <span class:critical={category.critical} class="badge">{category.critical ? "Critica" : "Informativa"}</span>
+                      <span class:warn={category.active === false} class="badge">{category.active === false ? "Baja" : "Activa"}</span>
+                      <button type="button" class="secondary" on:click={() => editCategory(category)}>Editar</button>
+                      {#if category.active === false}
+                        <button type="button" on:click={() => reactivateCategory(category)}>Reactivar</button>
+                      {:else}
+                        <button type="button" class="secondary" on:click={() => disableCategory(category)}>Dar de baja</button>
+                      {/if}
+                    </div>
+                  </article>
                 {/each}
               </div>
             </div>

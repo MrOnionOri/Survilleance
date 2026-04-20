@@ -55,13 +55,15 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     user = get_user_from_token(token, db)
-    if not user:
+    if not user or not user.active:
         raise credentials_error
     return user
 
 
 def require_roles(*roles: Role):
     def dependency(current_user: Annotated[User, Depends(get_current_user)]) -> User:
+        if current_user.must_change_password:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Password change required")
         if current_user.role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return current_user

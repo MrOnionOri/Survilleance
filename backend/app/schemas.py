@@ -18,14 +18,38 @@ class LoginRequest(BaseModel):
 
 class UserCreate(LoginRequest):
     role: Role = Role.viewer
+    active: bool = True
+    must_change_password: bool = True
 
 
 class UserRead(BaseModel):
     id: int
     email: EmailStr
     role: Role
+    active: bool
+    must_change_password: bool
+    last_login_at: datetime | None = None
+    session_count: int = 0
+    password_changed_at: datetime | None = None
+    created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class UserUpdate(BaseModel):
+    role: Role | None = None
+    active: bool | None = None
+    must_change_password: bool | None = None
+
+
+class UserPasswordReset(BaseModel):
+    password: str = Field(min_length=6)
+    must_change_password: bool = True
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=6)
+    new_password: str = Field(min_length=6)
 
 
 class CameraCreate(BaseModel):
@@ -223,6 +247,14 @@ class EventCategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str | None = None
     critical: bool = False
+    active: bool = True
+
+
+class EventCategoryUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = None
+    critical: bool | None = None
+    active: bool | None = None
 
 
 class EventCategoryRead(EventCategoryCreate):

@@ -42,6 +42,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.viewer)
+    active: Mapped[bool] = mapped_column(default=True, index=True)
+    must_change_password: Mapped[bool] = mapped_column(default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    session_count: Mapped[int] = mapped_column(Integer, default=0)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     labels: Mapped[list["Label"]] = relationship(back_populates="user")
@@ -142,6 +147,7 @@ class EventCategory(Base):
     name: Mapped[str] = mapped_column(String(160))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     critical: Mapped[bool] = mapped_column(default=False)
+    active: Mapped[bool] = mapped_column(default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

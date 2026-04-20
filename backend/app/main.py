@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
-from app.models import AIModel, Camera, DatasetVersion, Event, EventCategory, Label, TestSession, User
+from app.models import AIModel, Camera, DatasetVersion, Event, EventCategory, Label, Role, TestSession, User
 from app.schemas import (
     CameraCreate,
     CameraRecordingStatus,
@@ -31,6 +31,7 @@ from app.schemas import (
     EventCreate,
     EventCategoryCreate,
     EventCategoryRead,
+    EventCategoryUpdate,
     EventRead,
     BulkLabelCreate,
     LabelCreate,
@@ -39,13 +40,16 @@ from app.schemas import (
     ManualEventCreate,
     ModelCreate,
     ModelRead,
+    PasswordChangeRequest,
     RecordingChunk,
     TrainRequest,
     Token,
     TestSessionCreate,
     TestSessionRead,
     UserCreate,
+    UserPasswordReset,
     UserRead,
+    UserUpdate,
 )
 from app.security import (
     CanConfigure,
@@ -59,6 +63,7 @@ from app.security import (
     verify_password,
 )
 from app.seed import seed_admin, seed_event_categories
+from app.training import TrainingError, TrainingEvent, train_image_classifier
 
 
 settings = get_settings()
@@ -250,6 +255,14 @@ def on_startup() -> None:
 def run_lightweight_migrations() -> None:
     with engine.begin() as connection:
         if settings.database_url.startswith("postgres"):
+            connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE"))
+            connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"))
+            connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE"))
+            connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS session_count INTEGER DEFAULT 0"))
+            connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP WITH TIME ZONE"))
+            connection.execute(text("UPDATE users SET active = TRUE WHERE active IS NULL"))
+            connection.execute(text("UPDATE users SET must_change_password = FALSE WHERE must_change_password IS NULL"))
+            connection.execute(text("UPDATE users SET session_count = 0 WHERE session_count IS NULL"))
             connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS capture_fps INTEGER DEFAULT 5"))
             connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rotation_degrees INTEGER DEFAULT 0"))
             connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS flip_horizontal BOOLEAN DEFAULT FALSE"))
@@ -263,6 +276,8 @@ def run_lightweight_migrations() -> None:
             connection.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS roi_height DOUBLE PRECISION"))
             connection.execute(text("ALTER TABLE events ALTER COLUMN type TYPE VARCHAR(120) USING type::text"))
             connection.execute(text("ALTER TABLE labels ALTER COLUMN label TYPE VARCHAR(120) USING label::text"))
+            connection.execute(text("ALTER TABLE event_categories ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE"))
+            connection.execute(text("UPDATE event_categories SET active = TRUE WHERE active IS NULL"))
             connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS name VARCHAR(160)"))
             connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS purpose VARCHAR(120) DEFAULT 'event_classifier'"))
             connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS epochs INTEGER"))
@@ -273,6 +288,20 @@ def run_lightweight_migrations() -> None:
             connection.execute(text("ALTER TABLE models ADD COLUMN IF NOT EXISTS created_by_id INTEGER"))
             connection.execute(text("ALTER TABLE dataset_versions ADD COLUMN IF NOT EXISTS parent_dataset_id INTEGER"))
         elif settings.database_url.startswith("sqlite"):
+            user_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(users)"))}
+            sqlite_user_columns = {
+                "active": "BOOLEAN DEFAULT 1",
+                "must_change_password": "BOOLEAN DEFAULT 0",
+                "last_login_at": "DATETIME",
+                "session_count": "INTEGER DEFAULT 0",
+                "password_changed_at": "DATETIME",
+            }
+            for column, column_type in sqlite_user_columns.items():
+                if column not in user_columns:
+                    connection.execute(text(f"ALTER TABLE users ADD COLUMN {column} {column_type}"))
+            connection.execute(text("UPDATE users SET active = 1 WHERE active IS NULL"))
+            connection.execute(text("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NULL"))
+            connection.execute(text("UPDATE users SET session_count = 0 WHERE session_count IS NULL"))
             columns = {row[1] for row in connection.execute(text("PRAGMA table_info(cameras)"))}
             sqlite_camera_columns = {
                 "capture_fps": "INTEGER DEFAULT 5",
@@ -306,6 +335,10 @@ def run_lightweight_migrations() -> None:
             dataset_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(dataset_versions)"))}
             if "parent_dataset_id" not in dataset_columns:
                 connection.execute(text("ALTER TABLE dataset_versions ADD COLUMN parent_dataset_id INTEGER"))
+            category_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(event_categories)"))}
+            if "active" not in category_columns:
+                connection.execute(text("ALTER TABLE event_categories ADD COLUMN active BOOLEAN DEFAULT 1"))
+                connection.execute(text("UPDATE event_categories SET active = 1 WHERE active IS NULL"))
 
 
 @app.get("/health")
@@ -338,7 +371,7 @@ async def camera_mjpeg(camera_id: int, token: str) -> StreamingResponse:
     with SessionLocal() as db:
         user = get_user_from_token(token, db)
         camera = db.get(Camera, camera_id)
-    if not user or not camera:
+    if not user or not user.active or user.must_change_password or not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
     return StreamingResponse(
         stream_hub.mjpeg_frames(camera_id),
@@ -352,7 +385,7 @@ async def camera_stream(websocket: WebSocket, camera_id: int, token: str, mode: 
     with SessionLocal() as db:
         user = get_user_from_token(token, db)
         camera = db.get(Camera, camera_id)
-    if not user or not camera:
+    if not user or not user.active or user.must_change_password or not camera:
         await websocket.close(code=1008)
         return
 
@@ -394,6 +427,11 @@ def login(payload: LoginRequest, db: Annotated[Session, Depends(get_db)]) -> Tok
     user = db.scalar(select(User).where(User.email == payload.email))
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    if not user.active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is inactive")
+    user.last_login_at = datetime.now(UTC)
+    user.session_count = (user.session_count or 0) + 1
+    db.commit()
     return Token(access_token=create_access_token(user.email))
 
 
@@ -401,7 +439,14 @@ def login(payload: LoginRequest, db: Annotated[Session, Depends(get_db)]) -> Tok
 def register(payload: UserCreate, db: Annotated[Session, Depends(get_db)], _: CanConfigure) -> User:
     if db.scalar(select(User).where(User.email == payload.email)):
         raise HTTPException(status_code=409, detail="Email already registered")
-    user = User(email=payload.email, password_hash=hash_password(payload.password), role=payload.role)
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+        active=payload.active,
+        must_change_password=payload.must_change_password,
+        password_changed_at=datetime.now(UTC),
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -413,12 +458,69 @@ def me(current_user: Annotated[User, Depends(get_current_user)]) -> User:
     return current_user
 
 
+@app.post("/auth/change-password", response_model=UserRead)
+def change_password(
+    payload: PasswordChangeRequest,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+    current_user.password_hash = hash_password(payload.new_password)
+    current_user.must_change_password = False
+    current_user.password_changed_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
+@app.get("/users", response_model=list[UserRead])
+def list_users(db: Annotated[Session, Depends(get_db)], _: CanConfigure) -> list[User]:
+    return list(db.scalars(select(User).order_by(User.active.desc(), User.email)))
+
+
+@app.patch("/users/{user_id}", response_model=UserRead)
+def update_user(user_id: int, payload: UserUpdate, db: Annotated[Session, Depends(get_db)], current_user: CanConfigure) -> User:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    changes = payload.model_dump(exclude_unset=True)
+    if user.id == current_user.id and changes.get("active") is False:
+        raise HTTPException(status_code=422, detail="You cannot deactivate your own user")
+    if user.id == current_user.id and "role" in changes and changes["role"] != Role.admin:
+        raise HTTPException(status_code=422, detail="You cannot remove your own admin role")
+    for field, value in changes.items():
+        setattr(user, field, value)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.post("/users/{user_id}/password", response_model=UserRead)
+def reset_user_password(
+    user_id: int,
+    payload: UserPasswordReset,
+    db: Annotated[Session, Depends(get_db)],
+    _: CanConfigure,
+) -> User:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.password_hash = hash_password(payload.password)
+    user.must_change_password = payload.must_change_password
+    user.password_changed_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 @app.get("/cameras", response_model=list[CameraRead])
 def list_cameras(
     db: Annotated[Session, Depends(get_db)],
     _: CanView,
     include_disabled: bool = Query(default=False),
 ) -> list[CameraRead]:
+    expire_finished_tests(db)
     query = select(Camera).order_by(Camera.id)
     if not include_disabled:
         query = query.where(Camera.enabled.is_(True))
@@ -455,6 +557,7 @@ def list_cameras(
 
 @app.get("/cameras/{camera_id}", response_model=CameraRead)
 def get_camera(camera_id: int, db: Annotated[Session, Depends(get_db)], _: CanView) -> CameraRead:
+    expire_finished_tests(db)
     camera = db.get(Camera, camera_id)
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
@@ -533,8 +636,26 @@ def delete_camera(camera_id: int, db: Annotated[Session, Depends(get_db)], _: Ca
 
 
 def _camera_locked(db: Session, camera_id: int) -> bool:
+    expire_finished_tests(db)
     running_tests = db.scalars(select(TestSession).where(TestSession.status == "running")).all()
     return any(camera_id in json.loads(test.camera_ids_json) for test in running_tests)
+
+
+def expire_finished_tests(db: Session) -> None:
+    now = datetime.now(UTC)
+    running_tests = db.scalars(select(TestSession).where(TestSession.status == "running")).all()
+    expired_tests = [test for test in running_tests if as_utc(test.ends_at) <= now]
+    if not expired_tests:
+        return
+    for test in expired_tests:
+        test.status = "finished"
+    db.commit()
+
+
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _test_to_read(test: TestSession) -> TestSessionRead:
@@ -554,12 +675,14 @@ def _test_to_read(test: TestSession) -> TestSessionRead:
 
 @app.get("/tests", response_model=list[TestSessionRead])
 def list_tests(db: Annotated[Session, Depends(get_db)], _: CanView) -> list[TestSessionRead]:
+    expire_finished_tests(db)
     tests = db.scalars(select(TestSession).order_by(desc(TestSession.started_at))).all()
     return [_test_to_read(test) for test in tests]
 
 
 @app.post("/tests", response_model=TestSessionRead, status_code=status.HTTP_201_CREATED)
 def create_test(payload: TestSessionCreate, db: Annotated[Session, Depends(get_db)], current_user: CanTrain) -> TestSessionRead:
+    expire_finished_tests(db)
     cameras_found = db.scalars(select(Camera).where(Camera.id.in_(payload.camera_ids), Camera.enabled.is_(True))).all()
     if len(cameras_found) != len(set(payload.camera_ids)):
         raise HTTPException(status_code=422, detail="One or more cameras are not active")
@@ -596,14 +719,24 @@ def finish_test(test_id: int, db: Annotated[Session, Depends(get_db)], _: CanTra
     return _test_to_read(test)
 
 
-def ensure_category(db: Session, key: str) -> None:
-    if not db.scalar(select(EventCategory).where(EventCategory.key == key)):
+def ensure_category(db: Session, key: str, require_active: bool = True) -> None:
+    query = select(EventCategory).where(EventCategory.key == key)
+    if require_active:
+        query = query.where(EventCategory.active.is_(True))
+    if not db.scalar(query):
         raise HTTPException(status_code=422, detail=f"Unknown event category: {key}")
 
 
 @app.get("/categories", response_model=list[EventCategoryRead])
-def list_categories(db: Annotated[Session, Depends(get_db)], _: CanView) -> list[EventCategory]:
-    return list(db.scalars(select(EventCategory).order_by(EventCategory.name)))
+def list_categories(
+    db: Annotated[Session, Depends(get_db)],
+    _: CanView,
+    include_disabled: bool = False,
+) -> list[EventCategory]:
+    query = select(EventCategory).order_by(EventCategory.active.desc(), EventCategory.name)
+    if not include_disabled:
+        query = query.where(EventCategory.active.is_(True))
+    return list(db.scalars(query))
 
 
 @app.post("/categories", response_model=EventCategoryRead, status_code=status.HTTP_201_CREATED)
@@ -612,6 +745,34 @@ def create_category(payload: EventCategoryCreate, db: Annotated[Session, Depends
         raise HTTPException(status_code=409, detail="Category already exists")
     category = EventCategory(**payload.model_dump())
     db.add(category)
+    db.commit()
+    db.refresh(category)
+    return category
+
+
+@app.patch("/categories/{category_id}", response_model=EventCategoryRead)
+def update_category(
+    category_id: int,
+    payload: EventCategoryUpdate,
+    db: Annotated[Session, Depends(get_db)],
+    _: CanConfigure,
+) -> EventCategory:
+    category = db.get(EventCategory, category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(category, field, value)
+    db.commit()
+    db.refresh(category)
+    return category
+
+
+@app.delete("/categories/{category_id}", response_model=EventCategoryRead)
+def disable_category(category_id: int, db: Annotated[Session, Depends(get_db)], _: CanConfigure) -> EventCategory:
+    category = db.get(EventCategory, category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    category.active = False
     db.commit()
     db.refresh(category)
     return category
@@ -643,7 +804,7 @@ def list_events(
 def create_event(payload: EventCreate, db: Annotated[Session, Depends(get_db)], _: CanTrain) -> Event:
     if not db.get(Camera, payload.camera_id):
         raise HTTPException(status_code=404, detail="Camera not found")
-    ensure_category(db, payload.type)
+    ensure_category(db, payload.type, require_active=False)
     event = Event(**payload.model_dump())
     db.add(event)
     db.commit()
@@ -906,35 +1067,64 @@ def create_dataset(payload: DatasetCreate, db: Annotated[Session, Depends(get_db
 
 @app.post("/train", response_model=ModelRead, status_code=status.HTTP_201_CREATED)
 def train(payload: TrainRequest, db: Annotated[Session, Depends(get_db)], current_user: CanTrain) -> AIModel:
-    stats = dataset_stats(db, current_user)
     dataset = db.get(DatasetVersion, payload.dataset_id) if payload.dataset_id else None
     if payload.dataset_id and not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    if not dataset:
+        raise HTTPException(status_code=422, detail="Select a dataset before training")
+
+    event_ids = json.loads(dataset.event_ids_json)
+    events = list(db.scalars(select(Event).where(Event.id.in_(event_ids))).unique())
+    if not events:
+        raise HTTPException(status_code=422, detail="Dataset has no events")
+
     version = make_model_version(payload.purpose, payload.epochs)
     artifact_path = settings.streamwatch_data_dir / "models" / payload.purpose / version
-    artifact_path.mkdir(parents=True, exist_ok=True)
-    manifest = {
-        "version": version,
-        "purpose": payload.purpose,
-        "epochs": payload.epochs,
-        "notes": payload.notes,
-        "dataset_version": dataset.version if dataset else None,
-        "dataset": stats.model_dump(),
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-    (artifact_path / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    effective_epochs = min(payload.epochs, settings.training_max_epochs)
+    training_events = [
+        TrainingEvent(
+            id=event.id,
+            label=latest_event_label(event),
+            image_path=event.image_path,
+            metadata_json=event.metadata_json,
+        )
+        for event in events
+    ]
+    try:
+        result = train_image_classifier(
+            events=training_events,
+            data_dir=settings.streamwatch_data_dir,
+            artifact_path=artifact_path,
+            version=version,
+            purpose=payload.purpose,
+            epochs=effective_epochs,
+            notes=payload.notes,
+            image_size=settings.training_image_size,
+        )
+    except TrainingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     if payload.activate:
         deactivate_models(db, payload.purpose)
     model = AIModel(
         version=version,
         name=f"{payload.purpose} {version}",
         purpose=payload.purpose,
-        path=str(artifact_path),
-        epochs=payload.epochs,
+        path=str(result.model_path),
+        accuracy=result.metrics.get("accuracy"),
+        epochs=effective_epochs,
         status="active" if payload.activate else "trained",
         active=payload.activate,
-        dataset_summary_json=dataset.summary_json if dataset else json.dumps(stats.model_dump()),
-        metrics_json=json.dumps({"status": "placeholder", "accuracy": None}),
+        dataset_summary_json=json.dumps(result.dataset_summary),
+        metrics_json=json.dumps(
+            {
+                **result.metrics,
+                "requested_epochs": payload.epochs,
+                "effective_epochs": effective_epochs,
+                "dataset_version": dataset.version,
+                "artifact_path": str(result.artifact_path),
+            }
+        ),
         created_by_id=current_user.id,
     )
     db.add(model)

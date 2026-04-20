@@ -199,6 +199,15 @@ event_classifier_e0010_20260415_153000
 
 Cada modelo guarda version, ruta del artefacto, epochs, accuracy, estado, resumen del dataset y si esta activo. Solo admin/supervisor pueden entrenar, registrar artefactos o activar un modelo; analistas pueden revisar datos y versiones.
 
+El endpoint de entrenamiento materializa las evidencias con imagen del dataset en `models/<purpose>/<version>/dataset`, recorta el ROI cuando el evento trae esa metadata, entrena una CNN pequena con PyTorch en CPU/GPU disponible y guarda:
+
+- `model.pt`: checkpoint de PyTorch con arquitectura, pesos, labels y tamano de entrada
+- `labels.json`: mapeo de categorias a indices
+- `metrics.json`: accuracy de validacion e historial por epoch
+- `manifest.json`: resumen del artefacto y dataset usado
+
+Para evitar entrenamientos accidentales muy largos, `TRAINING_MAX_EPOCHS` limita los epochs efectivos del backend; por defecto son 50. `TRAINING_IMAGE_SIZE` controla el tamano de entrada de las imagenes; por defecto es 128.
+
 En **Campo de pruebas** puedes seleccionar camara y proposito de modelo. La vista registra temporalmente esa camara para procesamiento en vivo, abre el vivo por WebSocket, consulta detecciones recientes del worker y dibuja el ROI/recuadro con el nombre detectado. Este modo no graba chunks si la camara no esta dentro de una prueba formal. Hoy usa las detecciones existentes; al conectar inferencia real, el mismo panel puede mostrar predicciones del modelo activo.
 
 El flujo visual recomendado es:
