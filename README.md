@@ -22,7 +22,7 @@ models/        Modelos versionados
 
 ## Arranque rapido
 
-```bash
+```powershell
 docker compose up --build db backend frontend
 ```
 
@@ -47,32 +47,26 @@ Usuario inicial por defecto:
 
 Configurable con variables de entorno en `docker-compose.yml`.
 
-## Arranque recomendado en macOS
+## Arranque recomendado en Windows
 
-En macOS ejecuta los servicios principales con Docker y deja el worker fuera de Docker para que pueda pedir permisos de camara y detectar webcams locales o camaras USB conectadas por HUB.
+En Windows ejecuta los servicios principales con Docker Desktop y deja el worker local fuera de Docker para que pueda abrir webcams USB, camaras integradas y dispositivos conectados por HUB.
 
-Terminal 1: backend, frontend y base de datos por Docker:
+PowerShell 1: backend, frontend y base de datos por Docker:
 
-```bash
-./scripts/run-docker-services-macos.sh
+```powershell
+.\scripts\run-docker-services-windows.ps1
 ```
 
-Terminal 2: preparar el worker local:
+PowerShell 2: preparar el worker local:
 
-```bash
-./scripts/setup-local-worker-macos.sh
+```powershell
+.\scripts\setup-local-worker-windows.ps1
 ```
 
-El worker requiere Python 3.10 o superior. Si tu `python3` apunta a una version vieja, puedes indicar otro binario:
+PowerShell 2: ejecutar el worker local:
 
-```bash
-PYTHON_BIN=/opt/homebrew/bin/python3.12 ./scripts/setup-local-worker-macos.sh
-```
-
-Terminal 2: ejecutar el worker local:
-
-```bash
-./scripts/run-local-worker-macos.sh
+```powershell
+.\scripts\run-local-worker-windows.ps1
 ```
 
 Al arrancar, el worker escanea las camaras locales e imprime un resumen con el valor exacto que debes poner en **Fuentes > Agregar camara > Fuente**. Ejemplo:
@@ -101,34 +95,49 @@ Camara USB HUB 2 -> 2
 
 Si quieres repetir solo el escaneo sin iniciar el worker completo:
 
-```bash
-./scripts/probe-local-cameras-macos.sh 8
+```powershell
+.\scripts\probe-local-cameras-windows.ps1
 ```
 
-Si macOS no entrega frames, revisa permisos en **System Settings > Privacy & Security > Camera** y habilita la app desde donde ejecutas el worker, por ejemplo Terminal, iTerm o VS Code. Despues cierra y vuelve a abrir esa terminal.
+Si Windows no entrega frames, revisa permisos en **Configuracion > Privacidad y seguridad > Camara** y habilita el acceso para aplicaciones de escritorio, por ejemplo Terminal, PowerShell o VS Code. Despues cierra y vuelve a abrir esa terminal.
 
-Para grabar chunks MP4, el worker necesita FFmpeg. En macOS instalalo con:
+Para grabar chunks MP4, el worker necesita FFmpeg. En Windows puedes instalarlo con cualquiera de estas opciones:
 
-```bash
-brew install ffmpeg
+```powershell
+winget install Gyan.FFmpeg
 ```
 
-El script `run-local-worker-macos.sh` usa automaticamente el `ffmpeg` disponible en tu `PATH`. Si no lo encuentra, el vivo y las detecciones siguen funcionando, pero la grabacion se desactiva para no tumbar el proceso de la camara.
+o
 
-Notas para HUB USB en macOS:
+```powershell
+choco install ffmpeg
+```
+
+El script `run-local-worker-windows.ps1` usa automaticamente el `ffmpeg` disponible en tu `PATH`. Si no lo encuentra, el vivo y las detecciones siguen funcionando, pero la grabacion se desactiva para no tumbar el proceso de la camara.
+
+Notas para HUB USB en Windows:
 
 - Los indices `0`, `1`, `2` pueden cambiar si desconectas/reconectas el HUB.
-- Vuelve a ejecutar `./scripts/probe-local-cameras-macos.sh 8` despues de cambiar el HUB o reiniciar.
+- Vuelve a ejecutar `.\scripts\probe-local-cameras-windows.ps1` despues de cambiar el HUB o reiniciar.
 - El worker usa `WORKER_SOURCE_SCOPE=local`, asi que solo procesa fuentes locales; las fuentes RTSP/HTTP pueden seguir procesandose por un worker Docker con el perfil `worker` si lo necesitas.
+
+## Compatibilidad con macOS
+
+Si todavia necesitas usar esta rama en macOS, los scripts originales siguen disponibles:
+
+- `./scripts/run-docker-services-macos.sh`
+- `./scripts/setup-local-worker-macos.sh`
+- `./scripts/run-local-worker-macos.sh`
+- `./scripts/probe-local-cameras-macos.sh`
 
 ## Desarrollo local backend
 
-```bash
+```powershell
 cd backend
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## Revision manual de video
@@ -287,33 +296,21 @@ El sistema soporta fuentes locales y online al mismo tiempo usando dos workers c
 
 El servicio `worker` esta en un perfil opcional de Docker y tiene `WORKER_SOURCE_SCOPE=network`, asi evita intentar abrir webcams locales desde Linux. Para camaras RTSP o fuentes visibles desde Docker:
 
-```bash
+```powershell
 docker compose --profile worker up --build
-```
-
-Para webcam local en macOS, ejecuta solo `db backend frontend` en Docker:
-
-```bash
-./scripts/run-docker-services-macos.sh
-```
-
-Luego corre el worker local desde otra terminal:
-
-```bash
-./scripts/run-local-worker-macos.sh
 ```
 
 Para webcam local en Windows, ejecuta solo `db backend frontend` en Docker:
 
 ```powershell
-docker compose up --build db backend frontend
+.\scripts\run-docker-services-windows.ps1
 ```
 
 Luego corre el worker local desde PowerShell. Si no tienes `.venv`, el script lo crea:
 
 ```powershell
 cd "d:\dev\Projectos Mixtos\Survilleance"
-.\scripts\run-local-worker.ps1
+.\scripts\run-local-worker-windows.ps1
 ```
 
 Si quieres instalar dependencias antes:

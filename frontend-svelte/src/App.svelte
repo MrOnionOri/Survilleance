@@ -85,6 +85,7 @@
   let datasetEventCache = [];
   let aiDatasetEvents = [];
   let aiPreviewEvent = null;
+  let selectedDatasetEventDetails = [];
   let fieldCameraId = "";
   let fieldPurpose = "event_classifier";
   let fieldEvents = [];
@@ -165,8 +166,10 @@
     selectedAiEventId;
     aiDatasetEvents;
     datasetEventCache;
-    const availableEvents = [...aiDatasetEvents, ...datasetEventCache];
-    aiPreviewEvent = availableEvents.find((event) => event.id === selectedAiEventId) || availableEvents[0] || null;
+    selectedDatasetEventDetails;
+    const availableEvents = dedupeEvents([...aiDatasetEvents, ...datasetEventCache, ...selectedDatasetEventDetails]);
+    const previewId = normalizeId(selectedAiEventId);
+    aiPreviewEvent = availableEvents.find((event) => event.id === previewId) || selectedDatasetEventDetails[0] || availableEvents[0] || null;
   }
   $: if (aiPreviewEvent && (!aiCorrectedLabel || !eventTypes.includes(aiCorrectedLabel))) {
     aiCorrectedLabel = latestLabelForEvent(aiPreviewEvent);
@@ -190,6 +193,25 @@
     }
     if (response.status === 204) return null;
     return response.json();
+  }
+
+  function normalizeId(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function normalizeEventIds(eventIds = []) {
+    return Array.from(
+      new Set(
+        eventIds
+          .map((value) => normalizeId(value))
+          .filter((value) => value !== null),
+      ),
+    );
+  }
+
+  function dedupeEvents(list = []) {
+    return Array.from(new Map(list.filter(Boolean).map((event) => [normalizeId(event.id), event])).values());
   }
 
   async function login() {
@@ -1104,10 +1126,13 @@
   }
 
   function toggleDatasetEvent(eventId) {
-    selectedDatasetEvents = selectedDatasetEvents.includes(eventId)
-      ? selectedDatasetEvents.filter((id) => id !== eventId)
-      : [...selectedDatasetEvents, eventId];
-    selectedAiEventId = eventId;
+    const normalizedEventId = normalizeId(eventId);
+    if (normalizedEventId === null) return;
+    selectedDatasetEvents = selectedDatasetEvents.includes(normalizedEventId)
+      ? selectedDatasetEvents.filter((id) => id !== normalizedEventId)
+      : [...selectedDatasetEvents, normalizedEventId];
+    rebuildSelectedDatasetDetails(selectedDatasetEvents);
+    selectedAiEventId = normalizedEventId;
   }
 
   function handleDatasetEventClick(mouseEvent, event) {
@@ -1125,44 +1150,51 @@
 
   function selectDatasetFilter(type) {
     datasetFilter = type;
-    selectedDatasetEvents = aiDatasetEvents.map((event) => event.id);
+    selectedDatasetEvents = normalizeEventIds(aiDatasetEvents.map((event) => event.id));
+    rebuildSelectedDatasetDetails(selectedDatasetEvents);
   }
 
   function clearDatasetSelection() {
     selectedDatasetEvents = [];
+    selectedDatasetEventDetails = [];
   }
 
-  function selectedDatasetEventObjects() {
-    const availableEvents = [...events, ...datasetEventCache];
-    return selectedDatasetEvents
-      .map((eventId) => availableEvents.find((event) => event.id === eventId))
+  function rebuildSelectedDatasetDetails(eventIds = selectedDatasetEvents) {
+    const normalizedIds = normalizeEventIds(eventIds);
+    const availableEvents = dedupeEvents([...events, ...aiDatasetEvents, ...datasetEventCache, ...selectedDatasetEventDetails]);
+    selectedDatasetEventDetails = normalizedIds
+      .map((eventId) => availableEvents.find((event) => normalizeId(event.id) === eventId))
       .filter(Boolean);
   }
 
   async function ensureDatasetEvents(eventIds) {
-    const knownIds = new Set([...events, ...datasetEventCache].map((event) => event.id));
-    const missingIds = eventIds.filter((eventId) => !knownIds.has(eventId));
+    const normalizedIds = normalizeEventIds(eventIds);
+    const knownIds = new Set(dedupeEvents([...events, ...aiDatasetEvents, ...datasetEventCache, ...selectedDatasetEventDetails]).map((event) => normalizeId(event.id)));
+    const missingIds = normalizedIds.filter((eventId) => !knownIds.has(eventId));
     if (!missingIds.length) return;
     const loaded = await api(`/events?ids=${missingIds.join(",")}&limit=500`);
-    const nextById = new Map([...datasetEventCache, ...loaded].map((event) => [event.id, event]));
-    datasetEventCache = Array.from(nextById.values());
+    datasetEventCache = dedupeEvents([...datasetEventCache, ...loaded]);
   }
 
   async function loadDatasetIntoBuilder(dataset) {
-    await ensureDatasetEvents(dataset.event_ids);
-    selectedDatasetEvents = [...dataset.event_ids];
+    const eventIds = normalizeEventIds(dataset.event_ids);
+    await ensureDatasetEvents(eventIds);
+    selectedDatasetEvents = eventIds;
     parentDatasetId = dataset.id;
     datasetName = `${dataset.name} derivado`;
     datasetDescription = `Derivado de ${dataset.version}${dataset.description ? ` - ${dataset.description}` : ""}`;
-    selectedAiEventId = dataset.event_ids[0] || null;
+    rebuildSelectedDatasetDetails(eventIds);
+    selectedAiEventId = eventIds[0] || null;
     notify(`Dataset cargado al constructor: ${dataset.name}`);
   }
 
   async function mergeDatasetIntoBuilder(dataset) {
-    await ensureDatasetEvents(dataset.event_ids);
-    selectedDatasetEvents = Array.from(new Set([...selectedDatasetEvents, ...dataset.event_ids]));
+    const eventIds = normalizeEventIds(dataset.event_ids);
+    await ensureDatasetEvents(eventIds);
+    selectedDatasetEvents = normalizeEventIds([...selectedDatasetEvents, ...eventIds]);
     parentDatasetId = parentDatasetId || dataset.id;
-    selectedAiEventId = selectedAiEventId || dataset.event_ids[0] || null;
+    rebuildSelectedDatasetDetails(selectedDatasetEvents);
+    selectedAiEventId = selectedAiEventId || eventIds[0] || null;
     notify(`Dataset combinado: ${dataset.name}`);
   }
 
@@ -1191,6 +1223,7 @@
       datasetDescription = "";
       parentDatasetId = null;
       selectedDatasetEvents = [];
+      selectedDatasetEventDetails = [];
       await hydrate();
       notify(`Dataset creado: ${dataset.version}`);
     } catch (error) {
@@ -1210,6 +1243,8 @@
         }),
       });
       await hydrate();
+      await ensureDatasetEvents(selectedDatasetEvents);
+      rebuildSelectedDatasetDetails();
       notify(`Etiqueta corregida: ${labelFor(aiCorrectedLabel)}`);
     } catch (error) {
       notify(error.message);
@@ -1228,6 +1263,8 @@
         }),
       });
       await hydrate();
+      await ensureDatasetEvents(selectedDatasetEvents);
+      rebuildSelectedDatasetDetails();
       notify(`Etiqueta actualizada: ${labelFor(label)}`);
     } catch (error) {
       notify(error.message);
@@ -2426,7 +2463,7 @@
                 </div>
 
                 <div class="selected-dataset-list">
-                  {#each selectedDatasetEventObjects() as selectedEvent}
+                  {#each selectedDatasetEventDetails as selectedEvent}
                     <article class:active={aiPreviewEvent?.id === selectedEvent.id} class="selected-dataset-item">
                       <button type="button" class="selected-thumb" on:click={() => selectAiEvent(selectedEvent)}>
                         {#if evidenceUrl(selectedEvent.image_path)}

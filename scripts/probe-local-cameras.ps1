@@ -1,3 +1,8 @@
+[CmdletBinding()]
+param(
+    [int]$MaxIndex = 5
+)
+
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
@@ -10,4 +15,4 @@ if (-not (Test-Path $PythonExe)) {
 }
 
 Set-Location $WorkerDir
-& $PythonExe -m app.probe_cameras
+& $PythonExe -m app.probe_cameras --max-index $MaxIndex
